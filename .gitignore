@@ -1,0 +1,38 @@
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Logs locales del servidor
+access_log
+error_log
+*.log
+
+# Dependencias y builds eventuales
+node_modules/
+vendor/
+dist/
+build/
+coverage/
+
+# Datos generados o privados
+datos/configuracion.json
+datos/*.sqlite
+datos/*.sqlite-*
+datos/*.db
+datos/*.db-*
+
+# Biblioteca multimedia y archivos operativos del DAM
+imgs/
+listas/
+.posters/
+.basura/
+.dtrash/
+
+# Temporales
+*.tmp
+*.temp
+*.bak
+*.orig
+
