@@ -135,19 +135,63 @@ function guardarIdentidad(PDO $pdo, int $id, array $usuarios, array $nombres): i
 	}
 }
 
+function normalizarPerPageNombres(mixed $valor): int
+{
+	$opciones = [10, 25, 50, 100];
+	$perPage = (int) $valor;
+	return in_array($perPage, $opciones, true) ? $perPage : 25;
+}
+
+function paginaIdentidad(PDO $pdo, int $id, int $perPage): int
+{
+	$stmt = $pdo->query("
+		SELECT
+			i.id,
+			(SELECT MIN(lower(u.usuario)) FROM nombres_usuario u WHERE u.identidad_id = i.id) AS orden
+		FROM identidades i
+		WHERE EXISTS (
+			SELECT 1
+			FROM nombres_usuario u
+			WHERE u.identidad_id = i.id
+		)
+		ORDER BY orden ASC, i.id ASC
+	");
+	$posicion = 1;
+	foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $fila):
+		if ((int) $fila['id'] === $id):
+			return max(1, (int) ceil($posicion / max(1, $perPage)));
+		endif;
+		$posicion++;
+	endforeach;
+	return 1;
+}
+
+function idElementoIdentidad(int $id): string
+{
+	return 'identidad-' . $id;
+}
+
 $mensaje = $_GET['ok'] ?? '';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 	$accion = $_POST['accion'] ?? '';
 	try {
-		if ($accion === 'guardar'):
-			$id = (int) ($_POST['id'] ?? 0);
-			$usuarios = normalizarUsuariosFormulario($_POST['usuarios'] ?? '');
-			$nombres = normalizarValoresMultilinea($_POST['nombres'] ?? '');
-			$identidadId = guardarIdentidad($pdo, $id, $usuarios, $nombres);
-			header('Location: nombres.php?edit=' . $identidadId . '&ok=guardado');
-			exit;
+			if ($accion === 'guardar'):
+				$id = (int) ($_POST['id'] ?? 0);
+				$usuarios = normalizarUsuariosFormulario($_POST['usuarios'] ?? '');
+				$nombres = normalizarValoresMultilinea($_POST['nombres'] ?? '');
+				$identidadId = guardarIdentidad($pdo, $id, $usuarios, $nombres);
+				$perPageDestino = normalizarPerPageNombres($_POST['perPage'] ?? $_GET['perPage'] ?? 25);
+				$paginaDestino = paginaIdentidad($pdo, $identidadId, $perPageDestino);
+				$query = http_build_query([
+					'page' => $paginaDestino,
+					'perPage' => $perPageDestino,
+					'ok' => 'guardado',
+					'destacado' => $identidadId,
+				]);
+				header('Location: nombres.php?' . $query . '#' . idElementoIdentidad($identidadId));
+				exit;
 		elseif ($accion === 'eliminar_identidad'):
 			$id = (int) ($_POST['id'] ?? 0);
 			if ($id > 0):
@@ -178,10 +222,7 @@ endif;
 
 $q = trim($_GET['q'] ?? '');
 $perPageOptions = [10, 25, 50, 100];
-$perPage = (int) ($_GET['perPage'] ?? 25);
-if (!in_array($perPage, $perPageOptions, true)):
-	$perPage = 25;
-endif;
+$perPage = normalizarPerPageNombres($_GET['perPage'] ?? 25);
 $page = max(1, (int) ($_GET['page'] ?? 1));
 $offset = ($page - 1) * $perPage;
 
@@ -236,6 +277,7 @@ unset($row);
 
 $formUsuarios = $editData ? implode("\n", $editData['usuarios']) : '';
 $formNombres = $editData ? implode("\n", $editData['nombres']) : '';
+$destacadoId = (int) ($_GET['destacado'] ?? 0);
 $totalIdentidadesGlobal = (int) $pdo->query("
 	SELECT COUNT(*)
 	FROM identidades i
@@ -572,9 +614,10 @@ $formularioAbierto = $editData || $totalIdentidadesGlobal === 0;
 
 		<details class="nombres-panel admin-form-details"<?php echo $formularioAbierto ? ' open' : ''; ?>>
 			<summary><?php echo $editData ? 'Editar identidad' : 'Agregar identidad'; ?></summary>
-			<form method="post">
-				<input type="hidden" name="accion" value="guardar">
-				<input type="hidden" name="id" value="<?php echo h($editData['id'] ?? '0'); ?>">
+				<form method="post">
+					<input type="hidden" name="accion" value="guardar">
+					<input type="hidden" name="id" value="<?php echo h($editData['id'] ?? '0'); ?>">
+					<input type="hidden" name="perPage" value="<?php echo h($perPage); ?>">
 
 				<label for="usuarios">Usuarios / alias</label>
 				<textarea id="usuarios" name="usuarios" required placeholder="miina_matsumoto&#10;otro_alias"><?php echo h($formUsuarios); ?></textarea>
@@ -602,10 +645,22 @@ $formularioAbierto = $editData || $totalIdentidadesGlobal === 0;
 				<button type="submit">🔍</button>
 			</form>
 
-			<div class="nombres-grid">
-				<?php foreach ($rows as $row): ?>
-					<article class="nombres-card">
-						<h2><?php echo h(implode(' / ', $row['nombres'])); ?></h2>
+				<div class="nombres-grid">
+					<?php foreach ($rows as $row): ?>
+						<?php
+						$rowId = (int) $row['id'];
+						$esDestacada = $destacadoId === $rowId;
+						$editParams = [
+							'edit' => $rowId,
+							'page' => $page,
+							'perPage' => $perPage,
+						];
+						if ($q !== ''):
+							$editParams['q'] = $q;
+						endif;
+						?>
+						<article id="<?php echo h(idElementoIdentidad($rowId)); ?>" class="nombres-card<?php echo $esDestacada ? ' admin-card-destacada' : ''; ?>"<?php echo $esDestacada ? ' tabindex="-1" data-admin-destacado="1"' : ''; ?>>
+							<h2><?php echo h(implode(' / ', $row['nombres'])); ?></h2>
 						<ul class="nombres-lista">
 							<?php foreach ($row['usuarios'] as $usuario): ?>
 								<li>
@@ -618,9 +673,9 @@ $formularioAbierto = $editData || $totalIdentidadesGlobal === 0;
 									</form>
 								</li>
 							<?php endforeach; ?>
-						</ul>
-						<div class="nombres-acciones">
-							<a href="nombres.php?edit=<?php echo h($row['id']); ?><?php echo $q !== '' ? '&q=' . urlencode($q) : ''; ?>" title="Editar">✏️ Editar</a>
+							</ul>
+							<div class="nombres-acciones">
+								<a href="nombres.php?<?php echo h(http_build_query($editParams)); ?>" title="Editar">✏️ Editar</a>
 							<form method="post" onsubmit="return confirm('¿Eliminar la identidad y todos sus alias?')">
 								<input type="hidden" name="accion" value="eliminar_identidad">
 								<input type="hidden" name="id" value="<?php echo h($row['id']); ?>">
@@ -649,5 +704,13 @@ $formularioAbierto = $editData || $totalIdentidadesGlobal === 0;
 		</section>
 		</main>
 	</div>
-</body>
-</html>
+	<script>
+		document.addEventListener('DOMContentLoaded', () => {
+			const destacado = document.querySelector('[data-admin-destacado="1"]');
+			if (!destacado) return;
+			destacado.scrollIntoView({ block: 'center', inline: 'nearest' });
+			destacado.focus({ preventScroll: true });
+		});
+	</script>
+	</body>
+	</html>

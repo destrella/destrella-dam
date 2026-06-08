@@ -873,6 +873,32 @@ input[type="search"] {
 	margin-bottom: 0.75rem;
 }
 
+.admin-card-destacada {
+	border-color: var(--accent-primary) !important;
+	box-shadow:
+		0 0 0 3px color-mix(in srgb, var(--accent-primary) 28%, transparent),
+		0 6px 18px var(--shadow-color) !important;
+	animation: admin-card-destacada 1.4s ease-out;
+}
+
+.admin-card-destacada:focus {
+	outline: 3px solid var(--accent-primary);
+	outline-offset: 3px;
+}
+
+@keyframes admin-card-destacada {
+	0% {
+		box-shadow:
+			0 0 0 6px color-mix(in srgb, var(--accent-primary) 42%, transparent),
+			0 6px 18px var(--shadow-color);
+	}
+	100% {
+		box-shadow:
+			0 0 0 3px color-mix(in srgb, var(--accent-primary) 28%, transparent),
+			0 6px 18px var(--shadow-color);
+	}
+}
+
 @media (max-width: 820px) {
 	.configuracion-layout {
 		grid-template-columns: 1fr;

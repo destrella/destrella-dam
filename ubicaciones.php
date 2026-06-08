@@ -53,6 +53,52 @@ function normalizarEstado($a){
 		?? null;
 }
 
+function h($valor): string
+{
+	return htmlspecialchars((string) $valor, ENT_QUOTES, 'UTF-8');
+}
+
+function normalizarSortUbicaciones(mixed $valor): string
+{
+	return in_array($valor, ['Location', 'Country', 'GPSPosition'], true) ? (string) $valor : 'Location';
+}
+
+function normalizarPerPageUbicaciones(mixed $valor): int
+{
+	$opciones = [5, 10, 20, 50, 100];
+	$perPage = (int) $valor;
+	return in_array($perPage, $opciones, true) ? $perPage : 10;
+}
+
+function idElementoUbicacion(string $id): string
+{
+	$slug = trim((string) preg_replace('/[^A-Za-z0-9_-]+/', '-', $id), '-');
+	return 'ubicacion-' . ($slug !== '' ? $slug : md5($id));
+}
+
+function paginaUbicacion(PDO $pdo, string $id, string $sort, int $perPage): int
+{
+	$order = match (normalizarSortUbicaciones($sort)) {
+		'Country' => "COALESCE(c.Country, '') COLLATE NOCASE ASC, COALESCE(c.State, '') COLLATE NOCASE ASC, COALESCE(c.City, '') COLLATE NOCASE ASC, u.Location COLLATE NOCASE ASC, u.id ASC",
+		'GPSPosition' => "u.GPSPosition COLLATE NOCASE ASC, u.Location COLLATE NOCASE ASC, u.id ASC",
+		default => "u.Location COLLATE NOCASE ASC, u.id ASC",
+	};
+	$stmt = $pdo->query("
+		SELECT u.id
+		FROM ubicaciones u
+		JOIN cache_geo c ON u.cache_key = c.cache_key
+		ORDER BY $order
+	");
+	$posicion = 1;
+	foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $fila):
+		if ((string) $fila['id'] === $id):
+			return max(1, (int) ceil($posicion / max(1, $perPage)));
+		endif;
+		$posicion++;
+	endforeach;
+	return 1;
+}
+
 /* ================================
    ACCIONES (DELETE / EDIT)
 ================================ */
@@ -148,9 +194,9 @@ if($_SERVER['REQUEST_METHOD'] === 'POST'){
 			}
 		}
 
-		if($geo){
+			if($geo){
 
-			$id = $_POST['id'] ?: md5($location);
+				$id = $_POST['id'] ?: md5($location);
 
 			$stmt = $pdo->prepare("
 				INSERT OR REPLACE INTO ubicaciones
@@ -158,15 +204,27 @@ if($_SERVER['REQUEST_METHOD'] === 'POST'){
 				VALUES (?, ?, ?, ?)
 			");
 
-			$stmt->execute([
-				$id,
-				$location,
-				"$lat,$lon", // 👈 VERBATIM
-				$cacheKey
-			]);
+				$stmt->execute([
+					$id,
+					$location,
+					"$lat,$lon", // 👈 VERBATIM
+					$cacheKey
+				]);
+				$sortDestino = normalizarSortUbicaciones($_POST['sort'] ?? $_GET['sort'] ?? 'Location');
+				$perPageDestino = normalizarPerPageUbicaciones($_POST['perPage'] ?? $_GET['perPage'] ?? 10);
+				$paginaDestino = paginaUbicacion($pdo, (string) $id, $sortDestino, $perPageDestino);
+				$query = http_build_query([
+					'page' => $paginaDestino,
+					'sort' => $sortDestino,
+					'perPage' => $perPageDestino,
+					'ok' => 'guardado',
+					'destacado' => $id,
+				]);
+				header('Location: ubicaciones.php?' . $query . '#' . idElementoUbicacion((string) $id));
+				exit;
+			}
 		}
 	}
-}
 
 
 /* ================================
@@ -174,16 +232,14 @@ if($_SERVER['REQUEST_METHOD'] === 'POST'){
 ================================ */
 
 $allowedSort = ['Location','Country','GPSPosition'];
-$sort = $_GET['sort'] ?? 'Location';
-if(!in_array($sort, $allowedSort)) $sort = 'Location';
+$sort = normalizarSortUbicaciones($_GET['sort'] ?? 'Location');
 
 // búsqueda
 $q = trim($_GET['q'] ?? '');
 
 // tamaño de página
 $perPageOptions = [5,10,20,50,100];
-$perPage = (int)($_GET['perPage'] ?? 10);
-if(!in_array($perPage, $perPageOptions)) $perPage = 10;
+$perPage = normalizarPerPageUbicaciones($_GET['perPage'] ?? 10);
 
 // página
 $page = max(1, (int)($_GET['page'] ?? 1));
@@ -226,13 +282,14 @@ LIMIT $perPage OFFSET $offset
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$destacadoId = (string) ($_GET['destacado'] ?? '');
 $totalUbicacionesGlobal = (int) $pdo->query("SELECT COUNT(*) FROM ubicaciones")->fetchColumn();
 $formularioAbierto = $editData || $totalUbicacionesGlobal === 0;
 
 /* ================================
    EXPORT DEFINE()
 ================================ */
-function exportDefine($rows){
+function exportDefine($rows, string $destacadoId = '', string $sort = 'Location', string $q = '', int $perPage = 10, int $page = 1){
 /*	$out = "define('UBICACIONES', [\n";
 	foreach($rows as $r){
 		$out .= "\tmd5('".$r['Location']."') => [\n";
@@ -260,17 +317,26 @@ function exportDefine($rows){
 		endforeach;
 		$bandera .= '</span>';
 
-		$id = urlencode($r['id']);
-		$location = htmlspecialchars($r['Location'] ?? '', ENT_QUOTES, 'UTF-8');
-		$html .= '<fieldset class="ubicaciones-card">'.
-		'<legend>'.$bandera.' '.$location.'</legend>'.
-		'<div class="ubicaciones-card-actions">'.
-		'<a href="?edit='.$id.'">✏️ Editar</a>'.
-		'<a href="?delete='.$id.'" onclick="return confirm(\'¿Eliminar?\')">🗑️ Eliminar</a>'.
-		'</div>'.
-		'<ul>';
+		$id = (string) $r['id'];
+		$idElemento = idElementoUbicacion($id);
+		$destacada = $id !== '' && hash_equals($id, $destacadoId);
+		$editParams = [
+			'edit' => $id,
+			'page' => $page,
+			'sort' => $sort,
+			'q' => $q,
+			'perPage' => $perPage,
+		];
+		$location = h($r['Location'] ?? '');
+		$html .= '<fieldset id="'.h($idElemento).'" class="ubicaciones-card'.($destacada ? ' admin-card-destacada' : '').'"'.($destacada ? ' tabindex="-1" data-admin-destacado="1"' : '').'>'.
+			'<legend>'.$bandera.' '.$location.'</legend>'.
+			'<div class="ubicaciones-card-actions">'.
+			'<a href="?'.h(http_build_query($editParams)).'">✏️ Editar</a>'.
+			'<a href="?delete='.h(urlencode($id)).'" onclick="return confirm(\'¿Eliminar?\')">🗑️ Eliminar</a>'.
+			'</div>'.
+			'<ul>';
 		foreach(['Location','GPSPosition','Country','CountryCode','State','City'] as $k):
-			$html .= '<li><b>'.htmlspecialchars($k, ENT_QUOTES, 'UTF-8').'</b>: '.htmlspecialchars($r[$k] ?? '', ENT_QUOTES, 'UTF-8').'</li>';
+			$html .= '<li><b>'.h($k).'</b>: '.h($r[$k] ?? '').'</li>';
 		endforeach;
 		$html .= '</ul>'.
 
@@ -573,6 +639,8 @@ body.ubicaciones-page.configuracion-admin {
 
 		<form method="post" class="ubicaciones-form">
 			<input type="hidden" name="id" value="<?= htmlspecialchars($editData['id'] ?? '', ENT_QUOTES, 'UTF-8') ?>">
+			<input type="hidden" name="sort" value="<?= h($sort) ?>">
+			<input type="hidden" name="perPage" value="<?= h($perPage) ?>">
 
 			<div>
 				<label for="ubicacion-location">Location</label>
@@ -619,7 +687,7 @@ body.ubicaciones-page.configuracion-admin {
 			<a href="?sort=GPSPosition&q=<?= urlencode($q) ?>&perPage=<?= $perPage ?>">GPSPosition</a>
 		</div>
 		<div class="ubicaciones-grid">
-			<?php echo exportDefine($rows);?>
+			<?php echo exportDefine($rows, $destacadoId, $sort, $q, $perPage, $page);?>
 		</div>
 		<nav class="ubicaciones-paginacion" aria-label="Paginación">
 		<?php for($i=1;$i<=$totalPages;$i++): ?>
@@ -635,5 +703,13 @@ body.ubicaciones-page.configuracion-admin {
 	</section>
 	</main>
 </div>
+<script>
+	document.addEventListener('DOMContentLoaded', () => {
+		const destacado = document.querySelector('[data-admin-destacado="1"]');
+		if (!destacado) return;
+		destacado.scrollIntoView({ block: 'center', inline: 'nearest' });
+		destacado.focus({ preventScroll: true });
+	});
+</script>
 </body>
 </html>
