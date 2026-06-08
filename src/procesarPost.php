@@ -260,34 +260,15 @@ elseif (array_key_exists('subject', $json)):
 	// Orientacion
 	$rotar = '';
 	if (isset($json['orientation'])):
-		//echo '[';echo (string)$json['orientation'];echo ']<br>';
+		$orientacionFormulario = trim((string) $json['orientation']);
 		if ($json['media'] == 'vid'):
-			switch ($json['orientation']):
-				case 2:
-					// reflejo horizontal
-					//$argumentos[] = '-h=1';
-					break;
-				case 3:
-					// rotar 180
-					$argumentos[] = argumentoExifTool('Rotation', '180');
-					break;
-				case 4:
-					// reflejo vertical
-					//$argumentos[] = '-h=2';
-					break;
-				case 5:
-				case 8:
-					// rotar 270
-					$argumentos[] = argumentoExifTool('Rotation', '270');
-					break;
-				case 6:
-				case 7:
-					// rotar 90
-					$argumentos[] = argumentoExifTool('Rotation', '90');
-					break;
-			endswitch;
-		elseif (!empty($json['orientation'])):
-			$argumentos[] = argumentoExifTool('Orientation#', intval($json['orientation']));
+			$rotacionVideo = valorRotacionVideoDesdeOrientacion($orientacionFormulario);
+			$argumentos[] = argumentoExifTool('Rotation', $rotacionVideo > 0 ? (string) $rotacionVideo : '');
+		elseif ($orientacionFormulario !== '' && $orientacionFormulario !== '0'):
+			$orientacionExif = normalizarOrientacionExif($orientacionFormulario);
+			if ($orientacionExif >= 1 && $orientacionExif <= 8):
+				$argumentos[] = argumentoExifTool('Orientation#', $orientacionExif);
+			endif;
 		else:
 			// 0, sin orientación
 			$argumentos[] = argumentoExifTool('Orientation', '');

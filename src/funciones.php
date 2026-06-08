@@ -361,6 +361,76 @@ function normalizarOrientacionExif(mixed $orientacion): int
 	return $orientacion;
 }
 
+function valorRotacionVideoDesdeOrientacion(mixed $orientacion): int
+{
+	$texto = trim((string) $orientacion);
+	if ($texto === ''):
+		return 0;
+	endif;
+
+	if (preg_match('/-?\d+/', $texto, $coincidencias)):
+		$grados = ((int) $coincidencias[0]) % 360;
+		if ($grados < 0):
+			$grados += 360;
+		endif;
+		if (in_array($grados, [90, 180, 270], true)):
+			return $grados;
+		elseif ($grados === 0):
+			return 0;
+		endif;
+	endif;
+
+	return match (normalizarOrientacionExif($orientacion)) {
+		3 => 180,
+		5, 8 => 270,
+		6, 7 => 90,
+		default => 0,
+	};
+}
+
+function valorOrientacionFormulario(mixed $orientacion, string $tipo): int
+{
+	return $tipo === 'vid'
+		? valorRotacionVideoDesdeOrientacion($orientacion)
+		: normalizarOrientacionExif($orientacion);
+}
+
+function opcionesOrientacionFormulario(string $ruta, string $tipo, mixed $orientacion): array
+{
+	$extension = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
+	if ($tipo === 'vid' || in_array($extension, ['mp4', 'mov'], true)):
+		return [
+			0 => 'Sin rotación',
+			90 => 'Rotar 90° a la derecha',
+			180 => 'Rotar 180°',
+			270 => 'Rotar 90° a la izquierda',
+		];
+	endif;
+
+	$opcionesExif = [
+		0 => 'Sin orientación',
+		1 => 'Horizontal (normal)',
+		2 => 'Reflejo horizontal',
+		3 => 'Rotar 180°',
+		4 => 'Reflejo vertical',
+		5 => 'Transponer',
+		6 => 'Rotar 90° a la derecha',
+		7 => 'Transversal',
+		8 => 'Rotar 90° a la izquierda',
+	];
+
+	if (in_array($extension, ['jpg', 'jpeg', 'heic', 'webp'], true)):
+		return $opcionesExif;
+	endif;
+
+	$seleccionada = valorOrientacionFormulario($orientacion, $tipo);
+	$opciones = [0 => 'Sin orientación'];
+	if ($seleccionada > 0):
+		$opciones[$seleccionada] = $opcionesExif[$seleccionada] ?? ('Orientación actual (' . $seleccionada . ')');
+	endif;
+	return $opciones;
+}
+
 /**
  * Extrae y formatea parámetros de Stable Diffusion desde un texto.
  *
@@ -3092,30 +3162,12 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		' id="orientacion_' . $id . '"' .
 		' name="orientation"' .
 		'>';
-	$orientaciones = [
-		'Sin orientación',
-		'Horizontal (normal)',
-		'Reflejo Horizontal',
-		'Rotar 180°',
-		'Reflejo Vertical',
-		'Reflejo Horizontal y rotar 180°',
-		'Rotar 90° a la derecha',
-		'Reflejo Horizontal y 90° a la derecha',
-		'Rotar 90° a la izquierda'
-	];
-	foreach ($orientaciones as $v => $o):
-		$sel = '';
-		if ($v == $orientacion):
-			$sel = ' selected';
-		elseif ($orientacion == 90 && $v == 6):
-			$sel = ' selected';
-		elseif ($orientacion == 180 && $v == 3):
-			$sel = ' selected';
-		elseif ($orientacion == 270 && $v == 8):
-			$sel = ' selected';
-		endif;
-		$html .= '<option value="' . $v . '"' . $sel . '>[' . $v . '] ' . $o . '</option>';
-	endforeach;
+		$orientaciones = opcionesOrientacionFormulario($ruta, $tipo, $orientacion);
+		$orientacionSeleccionada = valorOrientacionFormulario($orientacion, $tipo);
+		foreach ($orientaciones as $v => $o):
+			$sel = ((int) $v === $orientacionSeleccionada) ? ' selected' : '';
+			$html .= '<option value="' . (int) $v . '"' . $sel . '>[' . (int) $v . '] ' . escaparHtml($o) . '</option>';
+		endforeach;
 	$html .=
 		'</select>';
 
