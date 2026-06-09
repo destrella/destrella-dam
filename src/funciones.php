@@ -1878,6 +1878,43 @@ function mostrarFigcaption(string $ruta, string $dimensiones): string
 		'<small>' . $dimensiones . ' [' . $tamaño . ']</small>' .
 		'</figcaption>';
 }
+
+function firmaCacheArchivo(string $ruta, ?array $dimensiones = null): string
+{
+	$rutaArchivo = is_file($ruta) ? $ruta : resolverRutaProyecto($ruta, 'file', false);
+	if ($rutaArchivo === null || !is_file($rutaArchivo)):
+		return '';
+	endif;
+
+	$firma = [
+		(string) (filemtime($rutaArchivo) ?: 0),
+		(string) (filesize($rutaArchivo) ?: 0),
+	];
+
+	if ($dimensiones === null):
+		$dimensiones = @getimagesize($rutaArchivo) ?: null;
+	endif;
+	if (
+		is_array($dimensiones)
+		&& isset($dimensiones[0], $dimensiones[1])
+		&& is_numeric($dimensiones[0])
+		&& is_numeric($dimensiones[1])
+	):
+		$firma[] = (int) $dimensiones[0] . 'x' . (int) $dimensiones[1];
+	endif;
+
+	return implode('-', $firma);
+}
+
+function agregarCacheBuster(string $ruta, string $firma): string
+{
+	if ($ruta === '' || $firma === ''):
+		return $ruta;
+	endif;
+
+	return $ruta . (str_contains($ruta, '?') ? '&' : '?') . 'v=' . rawurlencode($firma);
+}
+
 /**
  * Genera el botón que abre la media en el lightbox sin convertir toda la vista previa en enlace.
  *
@@ -1999,6 +2036,7 @@ function mostrarVideo($ruta, $id)
 	if (empty($ruta) || !is_file($ruta)):
 		return FALSE;
 	endif;
+	$rutaAbsoluta = $ruta;
 	$html = $dimensiones = $resultado = $salida = '';
 	$comando = comandoBrewSeguro([
 		'ffprobe',
@@ -2020,18 +2058,18 @@ function mostrarVideo($ruta, $id)
 	endif;
 
 	$ruta = str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $ruta);
+	$rutaVersionada = agregarCacheBuster($ruta, firmaCacheArchivo($rutaAbsoluta));
 	$poster = generarJPGtemporal($ruta);
 	$posterAttr = '';
 	if (!empty($poster)):
 		$rutaPosterAbsoluta = dirname(__DIR__) . DIRECTORY_SEPARATOR . $poster;
-		$posterVersion = file_exists($rutaPosterAbsoluta) ? '?v=' . filemtime($rutaPosterAbsoluta) : '';
-		$posterAttr = ' poster="' . htmlspecialchars($poster . $posterVersion, ENT_QUOTES, 'UTF-8') . '"';
+		$posterAttr = ' poster="' . htmlspecialchars(agregarCacheBuster($poster, firmaCacheArchivo($rutaPosterAbsoluta)), ENT_QUOTES, 'UTF-8') . '"';
 	endif;
 	$html .=
 		'<figure>' .
 			'<video' .
 			' id="img_' . $id . '"' .
-			' src="' . $ruta . '?v=' . filemtime($ruta) . '"' .
+			' src="' . htmlspecialchars($rutaVersionada, ENT_QUOTES, 'UTF-8') . '"' .
 			' data-ruta="' . $ruta . '"' .
 			' data-tipo="vid"' .
 			//' loop'.
@@ -2039,7 +2077,7 @@ function mostrarVideo($ruta, $id)
 			$posterAttr .
 		' controls' .
 		'></video>' .
-		mostrarBotonLightbox($ruta, 'video') .
+		mostrarBotonLightbox($rutaVersionada, 'video') .
 		mostrarFigcaption($ruta, $dimensiones) .
 		'</figure>';
 
@@ -2087,18 +2125,19 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 		$rutaweb = generarJPGtemporal($rutaweb);
 		$rutaweb = str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $rutaweb);
 	endif;
+	$rutawebVersionada = agregarCacheBuster($rutaweb, firmaCacheArchivo($ruta, $dimensiones));
 	$html .=
 		'<figure>' .
 			'<img' .
 			' id="img_' . $id . '"' .
-			' src="' . $rutaweb . '?v=' . filemtime($ruta) . '"' .
+			' src="' . htmlspecialchars($rutawebVersionada, ENT_QUOTES, 'UTF-8') . '"' .
 			' data-ruta="' . $rutaweboriginal . '"' .
 			$atributos .
 			' loading="lazy"' .
 		' data-tipo="img"' .
 		'>' .
 		$svg .
-		mostrarBotonLightbox($rutaweb, 'image') .
+		mostrarBotonLightbox($rutawebVersionada, 'image') .
 		mostrarFigcaption($rutaweboriginal, $dimensiones[0] . '×' . $dimensiones[1]) .
 		'</figure>';
 
@@ -2640,6 +2679,566 @@ function corregirOrientacionRegiones(string $ruta, string $eje): array
 		'comando' => $comando,
 		'salida' => $salida,
 		'codigo' => $codigo
+	];
+}
+
+function dimensionesImagenVisual(string $ruta, int $orientacion = 1): array
+{
+	$dimensiones = getimagesize($ruta);
+	$anchoArchivo = (float) ($dimensiones[0] ?? 0);
+	$altoArchivo = (float) ($dimensiones[1] ?? 0);
+	$intercambiaDimensiones = in_array(normalizarOrientacionExif($orientacion), [5, 6, 7, 8], true);
+
+	return [
+		'ancho_archivo' => $anchoArchivo,
+		'alto_archivo' => $altoArchivo,
+		'ancho_visual' => $intercambiaDimensiones ? $altoArchivo : $anchoArchivo,
+		'alto_visual' => $intercambiaDimensiones ? $anchoArchivo : $altoArchivo,
+	];
+}
+
+function transformarPuntoRegionAVisual(float $x, float $y, int $orientacion, float $ancho, float $alto): array
+{
+	switch (normalizarOrientacionExif($orientacion)):
+		case 2:
+			return [$ancho - $x, $y];
+		case 3:
+			return [$ancho - $x, $alto - $y];
+		case 4:
+			return [$x, $alto - $y];
+		case 5:
+			return [$y, $x];
+		case 6:
+			return [$alto - $y, $x];
+		case 7:
+			return [$alto - $y, $ancho - $x];
+		case 8:
+			return [$y, $ancho - $x];
+		default:
+			return [$x, $y];
+	endswitch;
+}
+
+function rectanguloRegionAVisual(
+	float $x,
+	float $y,
+	float $ancho,
+	float $alto,
+	int $orientacion,
+	float $anchoCoordenadas,
+	float $altoCoordenadas,
+	float $anchoVisualArchivo,
+	float $altoVisualArchivo,
+	bool $debeTransformar
+): array {
+	$puntos = [
+		[$x, $y],
+		[$x + $ancho, $y],
+		[$x, $y + $alto],
+		[$x + $ancho, $y + $alto],
+	];
+
+	if ($debeTransformar):
+		$puntos = array_map(
+			static fn($punto) => transformarPuntoRegionAVisual((float) $punto[0], (float) $punto[1], $orientacion, $anchoCoordenadas, $altoCoordenadas),
+			$puntos
+		);
+		$anchoVisualCoordenadas = in_array($orientacion, [5, 6, 7, 8], true) ? $altoCoordenadas : $anchoCoordenadas;
+		$altoVisualCoordenadas = in_array($orientacion, [5, 6, 7, 8], true) ? $anchoCoordenadas : $altoCoordenadas;
+	else:
+		$anchoVisualCoordenadas = $anchoCoordenadas;
+		$altoVisualCoordenadas = $altoCoordenadas;
+	endif;
+
+	if ($anchoVisualCoordenadas <= 0 || $altoVisualCoordenadas <= 0):
+		return ['x1' => 0.0, 'y1' => 0.0, 'x2' => 0.0, 'y2' => 0.0];
+	endif;
+
+	$escalaX = $anchoVisualArchivo / $anchoVisualCoordenadas;
+	$escalaY = $altoVisualArchivo / $altoVisualCoordenadas;
+	$xs = array_map(static fn($punto) => (float) $punto[0] * $escalaX, $puntos);
+	$ys = array_map(static fn($punto) => (float) $punto[1] * $escalaY, $puntos);
+
+	return [
+		'x1' => min($xs),
+		'y1' => min($ys),
+		'x2' => max($xs),
+		'y2' => max($ys),
+	];
+}
+
+function obtenerRegionesVisualesDesdeMetadatos(string $ruta, array $meta): array
+{
+	$nombres = valoresRegionMetadato($meta, 'RegionName');
+	$xs = valoresRegionMetadato($meta, 'RegionAreaX');
+	$ys = valoresRegionMetadato($meta, 'RegionAreaY');
+	$anchos = valoresRegionMetadato($meta, 'RegionAreaW');
+	$altos = valoresRegionMetadato($meta, 'RegionAreaH');
+	$unidades = valoresRegionMetadato($meta, 'RegionAreaUnit');
+	$tipos = valoresRegionMetadato($meta, 'RegionType');
+	$total = max(count($nombres), count($xs), count($ys), count($anchos), count($altos));
+	if ($total <= 0):
+		return [];
+	endif;
+
+	$orientacion = normalizarOrientacionExif($meta['Orientation'] ?? 1);
+	$dimensiones = dimensionesImagenVisual($ruta, $orientacion);
+	$anchoArchivo = (float) $dimensiones['ancho_archivo'];
+	$altoArchivo = (float) $dimensiones['alto_archivo'];
+	$anchoVisualArchivo = (float) $dimensiones['ancho_visual'];
+	$altoVisualArchivo = (float) $dimensiones['alto_visual'];
+	$anchoCoordenadas = (float) ($meta['RegionAppliedToDimensionsW'] ?? $anchoArchivo);
+	$altoCoordenadas = (float) ($meta['RegionAppliedToDimensionsH'] ?? $altoArchivo);
+	if ($anchoCoordenadas <= 0 || $altoCoordenadas <= 0 || $anchoVisualArchivo <= 0 || $altoVisualArchivo <= 0):
+		return [];
+	endif;
+
+	$coordenadasYaVisuales =
+		abs($anchoCoordenadas - $anchoVisualArchivo) < 1
+		&& abs($altoCoordenadas - $altoVisualArchivo) < 1;
+	$coordenadasParecenVisuales =
+		in_array($orientacion, [5, 6, 7, 8], true)
+		&& abs($anchoArchivo - $altoArchivo) >= 1
+		&& $coordenadasYaVisuales;
+	$debeTransformar = $orientacion !== 1 && !$coordenadasParecenVisuales;
+	$regiones = [];
+
+	for ($i = 0; $i < $total; $i++):
+		$nombre = trim((string) valorRegionMetadato($nombres, $i, ''));
+		$centroX = valorRegionMetadato($xs, $i, null);
+		$centroY = valorRegionMetadato($ys, $i, null);
+		$ancho = valorRegionMetadato($anchos, $i, null);
+		$alto = valorRegionMetadato($altos, $i, null);
+		if ($nombre === '' || $centroX === null || $centroY === null || $ancho === null || $alto === null):
+			continue;
+		endif;
+
+		$unidad = mb_strtolower(trim((string) valorRegionMetadato($unidades, $i, 'normalized')), 'UTF-8');
+		$centroX = (float) $centroX;
+		$centroY = (float) $centroY;
+		$ancho = (float) $ancho;
+		$alto = (float) $alto;
+		if ($ancho <= 0 || $alto <= 0):
+			continue;
+		endif;
+
+		if ($unidad === 'normalized'):
+			$centroX *= $anchoCoordenadas;
+			$centroY *= $altoCoordenadas;
+			$ancho *= $anchoCoordenadas;
+			$alto *= $altoCoordenadas;
+		endif;
+
+		$rectangulo = rectanguloRegionAVisual(
+			$centroX - ($ancho / 2),
+			$centroY - ($alto / 2),
+			$ancho,
+			$alto,
+			$orientacion,
+			$anchoCoordenadas,
+			$altoCoordenadas,
+			$anchoVisualArchivo,
+			$altoVisualArchivo,
+			$debeTransformar
+		);
+
+		$regiones[] = [
+			'nombre' => $nombre,
+			'tipo' => trim((string) valorRegionMetadato($tipos, $i, 'Face')),
+			'x1' => $rectangulo['x1'],
+			'y1' => $rectangulo['y1'],
+			'x2' => $rectangulo['x2'],
+			'y2' => $rectangulo['y2'],
+		];
+	endfor;
+
+	return $regiones;
+}
+
+function recalcularRegionesRecorte(string $ruta, array $recorte): array
+{
+	$etiquetas = [
+		'Orientation',
+		'RegionAppliedToDimensionsW',
+		'RegionAppliedToDimensionsH',
+		'RegionAreaX',
+		'RegionAreaY',
+		'RegionAreaW',
+		'RegionAreaH',
+		'RegionAreaUnit',
+		'RegionName',
+		'RegionType'
+	];
+	$meta = obtenerMetadatos($ruta, $etiquetas)['resultado'] ?? [];
+	if (!is_array($meta)):
+		$meta = [];
+	endif;
+
+	$regiones = obtenerRegionesVisualesDesdeMetadatos($ruta, $meta);
+	$total = count($regiones);
+	if ($total <= 0):
+		return [
+			'debe_escribir' => false,
+			'region_info' => '',
+			'total' => 0,
+			'conservadas' => 0,
+			'descartadas' => 0,
+		];
+	endif;
+
+	$x = (float) $recorte['x'];
+	$y = (float) $recorte['y'];
+	$anchoRecorte = (float) $recorte['ancho'];
+	$altoRecorte = (float) $recorte['alto'];
+	$regionList = [];
+	$descartadas = 0;
+
+	foreach ($regiones as $region):
+		$x1 = max((float) $region['x1'], $x);
+		$y1 = max((float) $region['y1'], $y);
+		$x2 = min((float) $region['x2'], $x + $anchoRecorte);
+		$y2 = min((float) $region['y2'], $y + $altoRecorte);
+		$anchoRegion = $x2 - $x1;
+		$altoRegion = $y2 - $y1;
+		if ($anchoRegion <= 1 || $altoRegion <= 1):
+			$descartadas++;
+			continue;
+		endif;
+
+		$nuevoX1 = limitarNumero($x1 - $x, 0, $anchoRecorte);
+		$nuevoY1 = limitarNumero($y1 - $y, 0, $altoRecorte);
+		$nuevoX2 = limitarNumero($x2 - $x, 0, $anchoRecorte);
+		$nuevoY2 = limitarNumero($y2 - $y, 0, $altoRecorte);
+		$anchoRegion = $nuevoX2 - $nuevoX1;
+		$altoRegion = $nuevoY2 - $nuevoY1;
+		if ($anchoRegion <= 1 || $altoRegion <= 1):
+			$descartadas++;
+			continue;
+		endif;
+
+		$centroX = $nuevoX1 + ($anchoRegion / 2);
+		$centroY = $nuevoY1 + ($altoRegion / 2);
+		$nombre = normalizarTag(trim((string) $region['nombre']));
+		$tipo = normalizarTag(trim((string) ($region['tipo'] ?: 'Face')));
+		$tipo = $tipo !== '' ? $tipo : 'Face';
+
+		$regionList[] =
+			'{Area={W=' . numeroRegionExif($anchoRegion / $anchoRecorte) .
+			', H=' . numeroRegionExif($altoRegion / $altoRecorte) .
+			', X=' . numeroRegionExif($centroX / $anchoRecorte) .
+			', Y=' . numeroRegionExif($centroY / $altoRecorte) .
+			', Unit=normalized}, Name=' . $nombre .
+			', Type=' . $tipo .
+			'}';
+	endforeach;
+
+	$regionInfo = '';
+	if (!empty($regionList)):
+		$regionInfo =
+			'{AppliedToDimensions={W=' . numeroRegionExif($anchoRecorte) .
+			',H=' . numeroRegionExif($altoRecorte) .
+			',Unit=pixel}, RegionList=[' . implode(', ', $regionList) . ']}';
+	endif;
+
+	return [
+		'debe_escribir' => true,
+		'region_info' => $regionInfo,
+		'total' => $total,
+		'conservadas' => count($regionList),
+		'descartadas' => $descartadas,
+	];
+}
+
+function exiftoolEscrituraAceptable(int $codigo, array $salida): bool
+{
+	if ($codigo === 0):
+		return true;
+	endif;
+	foreach ($salida as $linea):
+		if (stripos((string) $linea, 'error') !== false):
+			return false;
+		endif;
+	endforeach;
+
+	return $codigo === 1;
+}
+
+function prepararAlfaGd(GdImage $imagen): void
+{
+	imagealphablending($imagen, false);
+	imagesavealpha($imagen, true);
+}
+
+function crearImagenGdDesdeArchivo(string $ruta, string $extension): ?GdImage
+{
+	if (!extension_loaded('gd')):
+		return null;
+	endif;
+
+	$extension = strtolower($extension);
+	$imagen = match ($extension) {
+		'jpg', 'jpeg' => function_exists('imagecreatefromjpeg') ? @imagecreatefromjpeg($ruta) : false,
+		'png' => function_exists('imagecreatefrompng') ? @imagecreatefrompng($ruta) : false,
+		'webp' => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($ruta) : false,
+		default => false,
+	};
+
+	return $imagen instanceof GdImage ? $imagen : null;
+}
+
+function orientarImagenGd(GdImage $imagen, int $orientacion): ?GdImage
+{
+	$orientacion = normalizarOrientacionExif($orientacion);
+	if ($orientacion === 1):
+		return $imagen;
+	endif;
+
+	$transparente = imagecolorallocatealpha($imagen, 0, 0, 0, 127);
+	$rotar = static function (GdImage $origen, int $angulo) use ($transparente): ?GdImage {
+		$rotada = imagerotate($origen, $angulo, $transparente);
+		if (!$rotada instanceof GdImage):
+			return null;
+		endif;
+		prepararAlfaGd($rotada);
+		return $rotada;
+	};
+
+	switch ($orientacion):
+		case 2:
+			imageflip($imagen, IMG_FLIP_HORIZONTAL);
+			return $imagen;
+		case 3:
+			return $rotar($imagen, 180);
+		case 4:
+			imageflip($imagen, IMG_FLIP_VERTICAL);
+			return $imagen;
+		case 5:
+			$rotada = $rotar($imagen, 270);
+			if (!$rotada):
+				return null;
+			endif;
+			imageflip($rotada, IMG_FLIP_HORIZONTAL);
+			return $rotada;
+		case 6:
+			return $rotar($imagen, 270);
+		case 7:
+			$rotada = $rotar($imagen, 270);
+			if (!$rotada):
+				return null;
+			endif;
+			imageflip($rotada, IMG_FLIP_VERTICAL);
+			return $rotada;
+		case 8:
+			return $rotar($imagen, 90);
+		default:
+			return $imagen;
+	endswitch;
+}
+
+function guardarImagenGd(GdImage $imagen, string $ruta, string $extension): bool
+{
+	$extension = strtolower($extension);
+	return match ($extension) {
+		'jpg', 'jpeg' => function_exists('imagejpeg') && imagejpeg($imagen, $ruta, 92),
+		'png' => function_exists('imagepng') && imagepng($imagen, $ruta, 6),
+		'webp' => function_exists('imagewebp') && imagewebp($imagen, $ruta, 92),
+		default => false,
+	};
+}
+
+function recortarImagenConImagick(string $ruta, string $temporal, array $recorte): void
+{
+	$imagen = new Imagick();
+	try {
+		$imagen->readImage($ruta);
+		$imagen->setIteratorIndex(0);
+		if (method_exists($imagen, 'autoOrient')):
+			$imagen->autoOrient();
+		endif;
+		$imagen->cropImage($recorte['ancho'], $recorte['alto'], $recorte['x'], $recorte['y']);
+		$imagen->setImagePage(0, 0, 0, 0);
+		if (defined('Imagick::ORIENTATION_TOPLEFT')):
+			$imagen->setImageOrientation(Imagick::ORIENTATION_TOPLEFT);
+		endif;
+		$imagen->writeImage($temporal);
+	} finally {
+		$imagen->clear();
+		$imagen->destroy();
+	}
+}
+
+function recortarImagenConGd(string $ruta, string $temporal, array $recorte, string $extension, int $orientacion): bool
+{
+	$imagen = crearImagenGdDesdeArchivo($ruta, $extension);
+	if (!$imagen):
+		return false;
+	endif;
+
+	$orientada = orientarImagenGd($imagen, $orientacion);
+	if (!$orientada):
+		return false;
+	endif;
+	prepararAlfaGd($orientada);
+
+	$recortada = imagecrop($orientada, [
+		'x' => (int) $recorte['x'],
+		'y' => (int) $recorte['y'],
+		'width' => (int) $recorte['ancho'],
+		'height' => (int) $recorte['alto'],
+	]);
+	if (!$recortada instanceof GdImage):
+		return false;
+	endif;
+
+	prepararAlfaGd($recortada);
+	return guardarImagenGd($recortada, $temporal, $extension);
+}
+
+function recortarImagenConRegiones(string $ruta, array $datos): array
+{
+	if (!is_file($ruta) || tipoMultimediaDesdeRuta($ruta) !== 'img'):
+		return ['ok' => false, 'mensaje' => 'Archivo inválido para recorte.'];
+	endif;
+
+	$metaOrientacion = obtenerMetadatos($ruta, ['Orientation'])['resultado'] ?? [];
+	$orientacion = normalizarOrientacionExif(is_array($metaOrientacion) ? ($metaOrientacion['Orientation'] ?? 1) : 1);
+	$dimensiones = dimensionesImagenVisual($ruta, $orientacion);
+	$anchoVisual = (float) $dimensiones['ancho_visual'];
+	$altoVisual = (float) $dimensiones['alto_visual'];
+	if ($anchoVisual <= 0 || $altoVisual <= 0):
+		return ['ok' => false, 'mensaje' => 'No se pudieron leer las dimensiones de la imagen.'];
+	endif;
+
+	$origenAncho = (float) ($datos['origen_ancho'] ?? $datos['origenAncho'] ?? $datos['sourceWidth'] ?? $anchoVisual);
+	$origenAlto = (float) ($datos['origen_alto'] ?? $datos['origenAlto'] ?? $datos['sourceHeight'] ?? $altoVisual);
+	if ($origenAncho <= 0 || $origenAlto <= 0):
+		$origenAncho = $anchoVisual;
+		$origenAlto = $altoVisual;
+	endif;
+
+	$escalaX = $anchoVisual / $origenAncho;
+	$escalaY = $altoVisual / $origenAlto;
+	$x = (float) ($datos['x'] ?? 0) * $escalaX;
+	$y = (float) ($datos['y'] ?? 0) * $escalaY;
+	$ancho = (float) ($datos['ancho'] ?? $datos['width'] ?? 0) * $escalaX;
+	$alto = (float) ($datos['alto'] ?? $datos['height'] ?? 0) * $escalaY;
+
+	$x = floor(limitarNumero($x, 0, max(0, $anchoVisual - 1)));
+	$y = floor(limitarNumero($y, 0, max(0, $altoVisual - 1)));
+	$ancho = round(limitarNumero($ancho, 1, $anchoVisual - $x));
+	$alto = round(limitarNumero($alto, 1, $altoVisual - $y));
+	if ($ancho < 2 || $alto < 2):
+		return ['ok' => false, 'mensaje' => 'El rectángulo de recorte es demasiado pequeño.'];
+	endif;
+
+	$recorte = [
+		'x' => (int) $x,
+		'y' => (int) $y,
+		'ancho' => (int) $ancho,
+		'alto' => (int) $alto,
+	];
+	$regiones = recalcularRegionesRecorte($ruta, $recorte);
+	$mtimeOriginal = filemtime($ruta) ?: time();
+	$atimeOriginal = fileatime($ruta) ?: $mtimeOriginal;
+	$info = pathinfo($ruta);
+	$extension = strtolower((string) ($info['extension'] ?? ''));
+	$temporal = ($info['dirname'] ?? dirname($ruta)) . DIRECTORY_SEPARATOR .
+		'.' . ($info['filename'] ?? basename($ruta)) . '.crop-' . bin2hex(random_bytes(6)) . '.' . $extension;
+	$salidas = [];
+
+	$errorImagen = null;
+	$recorteGenerado = false;
+	if (extension_loaded('imagick')):
+		try {
+			recortarImagenConImagick($ruta, $temporal, $recorte);
+			$recorteGenerado = is_file($temporal) && filesize($temporal) > 0;
+		} catch (\Throwable $e) {
+			$errorImagen = $e->getMessage();
+			if (is_file($temporal)):
+				@unlink($temporal);
+			endif;
+		}
+	endif;
+
+	if (!$recorteGenerado):
+		$recorteGenerado = recortarImagenConGd($ruta, $temporal, $recorte, $extension, $orientacion);
+		if (!$recorteGenerado):
+			if (is_file($temporal)):
+				@unlink($temporal);
+			endif;
+			$detalle = $errorImagen ? ' Detalle Imagick: ' . $errorImagen : '';
+			return ['ok' => false, 'mensaje' => 'No se pudo recortar la imagen con Imagick ni GD.' . $detalle];
+		endif;
+	endif;
+
+	if (!is_file($temporal) || filesize($temporal) <= 0):
+		if (is_file($temporal)):
+			@unlink($temporal);
+		endif;
+		return ['ok' => false, 'mensaje' => 'No se generó el archivo recortado.'];
+	endif;
+
+	$comandoCopiar = comandoBrewSeguro([
+		'exiftool',
+		'-overwrite_original',
+		'-TagsFromFile',
+		$ruta,
+		'-all:all',
+		$temporal
+	]);
+	$salidaCopiar = [];
+	exec($comandoCopiar . ' 2>&1', $salidaCopiar, $codigoCopiar);
+	$salidas = array_merge($salidas, $salidaCopiar);
+	if (!exiftoolEscrituraAceptable($codigoCopiar, $salidaCopiar)):
+		@unlink($temporal);
+		return ['ok' => false, 'mensaje' => 'No se pudieron copiar los metadatos al recorte.', 'salida' => $salidas];
+	endif;
+
+	$argumentosMetadatos = [
+		'exiftool',
+		'-overwrite_original',
+		'-charset',
+		'utf8',
+		argumentoExifTool('Orientation#', '1'),
+		argumentoExifTool('ExifImageWidth', $recorte['ancho']),
+		argumentoExifTool('ExifImageHeight', $recorte['alto']),
+	];
+	if ($regiones['debe_escribir']):
+		$argumentosMetadatos[] = argumentoExifTool('XMP-mwg-rs:RegionInfo', $regiones['region_info']);
+	endif;
+	$argumentosMetadatos[] = $temporal;
+	$comandoMetadatos = comandoBrewSeguro($argumentosMetadatos);
+	$salidaMetadatos = [];
+	exec($comandoMetadatos . ' 2>&1', $salidaMetadatos, $codigoMetadatos);
+	$salidas = array_merge($salidas, $salidaMetadatos);
+	if (!exiftoolEscrituraAceptable($codigoMetadatos, $salidaMetadatos)):
+		@unlink($temporal);
+		return ['ok' => false, 'mensaje' => 'No se pudieron actualizar los metadatos del recorte.', 'salida' => $salidas];
+	endif;
+
+	$permisos = @fileperms($ruta);
+	if ($permisos !== false):
+		@chmod($temporal, $permisos & 0777);
+	endif;
+	if (!rename($temporal, $ruta)):
+		@unlink($temporal);
+		return ['ok' => false, 'mensaje' => 'No se pudo reemplazar el archivo original.'];
+	endif;
+	@touch($ruta, $mtimeOriginal, $atimeOriginal);
+
+	clearstatcache(true, $ruta);
+	actualizarIndicePalabrasClave([[$ruta, 'img']], 0, true);
+	limpiarPalabrasClaveSinUso();
+
+	return [
+		'ok' => true,
+		'mensaje' => 'Imagen recortada.',
+		'ancho' => $recorte['ancho'],
+		'alto' => $recorte['alto'],
+		'regiones_total' => $regiones['total'],
+		'regiones_conservadas' => $regiones['conservadas'],
+		'regiones_descartadas' => $regiones['descartadas'],
+		'salida' => $salidas,
 	];
 }
 /**
@@ -3324,8 +3923,11 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		'<div class="botones">' .
 		'<button type="button" id="btn_' . $id . '" onclick="guardar(\'' . $id . '\')" title="Guardar datos">💾</button>';
 	if ($tipo == 'img'):
+		$volverRecorte = $_SERVER['REQUEST_URI'] ?? 'index.php';
 		$html .=
 			' <a href="caras.php?foto=' . urlencode(str_replace(dirname(__DIR__) . '/', '', $ruta)) . '" title="Etiquetar personas">🧑🏽</a>';
+		$html .=
+			' <a href="recortar.php?foto=' . urlencode(str_replace(dirname(__DIR__) . '/', '', $ruta)) . '&volver=' . urlencode($volverRecorte) . '" title="Recortar imagen">✂️</a>';
 		if ($tieneRegionesCorregibles):
 			$html .=
 				' <button type="button" id="region_horizontal_' . $id . '" onclick="corregirRegiones(\'' . $id . '\', \'horizontal\')" title="Corregir regiones por espejo horizontal" aria-label="Corregir regiones por espejo horizontal">↔️</button>' .
