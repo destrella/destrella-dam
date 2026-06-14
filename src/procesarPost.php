@@ -22,6 +22,279 @@ function resolverArchivoLocalAbrible(?string $ruta): ?string
 	return resolverRutaProyecto($ruta, 'file', false);
 }
 
+function rutaDestinoDisponible(string $directorio, string $nombreArchivo): string
+{
+	$destino = rtrim($directorio, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . basename($nombreArchivo);
+	if (!file_exists($destino)):
+		return $destino;
+	endif;
+
+	$info = pathinfo($nombreArchivo);
+	$nombre = $info['filename'] ?? basename($nombreArchivo);
+	$extension = isset($info['extension']) && $info['extension'] !== '' ? '.' . $info['extension'] : '';
+	$i = 2;
+	do {
+		$destino = rtrim($directorio, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $nombre . ' ' . $i . $extension;
+		$i++;
+	} while (file_exists($destino));
+
+	return $destino;
+}
+
+function resultadoOperacionArchivo(
+	bool $ok,
+	string $origen,
+	string $destino = '',
+	string $error = '',
+	?string $directorioOrigen = null,
+	?string $directorioEliminado = null,
+	array $directoriosEliminados = []
+): array
+{
+	$directorioOrigen ??= dirname($origen);
+	return [
+		'ok' => $ok,
+		'origen' => rutaRelativaDesdeProyecto($origen),
+		'destino' => $destino !== '' ? rutaRelativaDesdeProyecto($destino) : '',
+		'directorio_origen' => rutaRelativaDesdeProyecto($directorioOrigen),
+		'directorio_origen_eliminado' => !is_dir($directorioOrigen),
+		'directorio_eliminado' => $directorioEliminado !== null ? rutaRelativaDesdeProyecto($directorioEliminado) : '',
+		'directorios_eliminados' => array_map('rutaRelativaDesdeProyecto', $directoriosEliminados),
+		'error' => $error,
+	];
+}
+
+function candidatosDirectoriosLimpieza(string $directorio, string $rootPermitido): array
+{
+	$directorioReal = realpath($directorio);
+	$rootReal = realpath($rootPermitido);
+	if (!$directorioReal || !$rootReal):
+		return [];
+	endif;
+
+	$rootReal = rtrim($rootReal, DIRECTORY_SEPARATOR);
+	if ($directorioReal !== $rootReal && !str_starts_with($directorioReal, $rootReal . DIRECTORY_SEPARATOR)):
+		return [];
+	endif;
+
+	$directorios = [];
+	while ($directorioReal !== $rootReal):
+		$directorios[] = $directorioReal;
+		$directorioReal = dirname($directorioReal);
+		if ($directorioReal !== $rootReal && !str_starts_with($directorioReal, $rootReal . DIRECTORY_SEPARATOR)):
+			break;
+		endif;
+	endwhile;
+
+	return $directorios;
+}
+
+function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, bool $mantenerEnIndice = true, bool $permitirMismoDirectorio = false): array
+{
+	$directorioOrigen = dirname($rutaOrigen);
+	if (!is_dir($directorioDestino) && !mkdir($directorioDestino, 0755, true)):
+		return resultadoOperacionArchivo(false, $rutaOrigen, '', 'No se pudo crear la carpeta destino.', $directorioOrigen);
+	endif;
+
+	$destinoReal = realpath($directorioDestino);
+	$origenDirReal = realpath($directorioOrigen);
+	if (!$destinoReal || !$origenDirReal || !rutaDentroDeDirectorio($destinoReal, proyectoRaiz())):
+		return resultadoOperacionArchivo(false, $rutaOrigen, '', 'Carpeta destino inválida.', $directorioOrigen);
+	endif;
+
+	if (!$permitirMismoDirectorio && $destinoReal === $origenDirReal):
+		return resultadoOperacionArchivo(false, $rutaOrigen, '', 'El archivo ya está en esa carpeta.', $directorioOrigen);
+	endif;
+
+	$rutaDestino = rutaDestinoDisponible($destinoReal, basename($rutaOrigen));
+	if (!rename($rutaOrigen, $rutaDestino)):
+		return resultadoOperacionArchivo(false, $rutaOrigen, $rutaDestino, 'No se pudo mover el archivo.', $directorioOrigen);
+	endif;
+
+	if ($mantenerEnIndice):
+		$tipoIndice = tipoMultimediaDesdeRuta($rutaDestino);
+		$indiceMovido = $tipoIndice !== null && moverIndicePalabrasClaveArchivo($rutaOrigen, $rutaDestino, $tipoIndice);
+		if (!$indiceMovido):
+			eliminarIndicePalabrasClaveArchivo($rutaOrigen, false);
+		endif;
+		if (!$indiceMovido && $tipoIndice !== null):
+			actualizarIndicePalabrasClave([[$rutaDestino, $tipoIndice]], 0, true);
+		endif;
+		if (!$indiceMovido):
+			limpiarPalabrasClaveSinUso();
+		endif;
+	else:
+		eliminarIndicePalabrasClaveArchivo($rutaOrigen, false);
+		eliminarIndicePalabrasClaveArchivo($rutaDestino, false);
+		limpiarPalabrasClaveSinUso();
+	endif;
+
+	$directoriosLimpieza = candidatosDirectoriosLimpieza($directorioOrigen, proyectoRaiz());
+	limpiarDirectoriosVacios($directorioOrigen, proyectoRaiz());
+	$directoriosEliminados = array_values(array_filter(
+		$directoriosLimpieza,
+		static fn($directorio) => !is_dir($directorio)
+	));
+	$directorioEliminado = !empty($directoriosEliminados) ? end($directoriosEliminados) : null;
+	return resultadoOperacionArchivo(true, $rutaOrigen, $rutaDestino, '', $directorioOrigen, $directorioEliminado ?: null, $directoriosEliminados);
+}
+
+function archivarArchivo(string $rutaOrigen, array $configuracion): array
+{
+	$ruta = proyectoRaiz() . DIRECTORY_SEPARATOR . rtrim($configuracion['ruta_archivar'] ?? 'listas', '/');
+	$fecha = '';
+	$datos = obtenerMetadatos($rutaOrigen)['salida'];
+	foreach ($datos as $d):
+		if (str_starts_with($d, 'DateTimeOriginal')):
+			$fecha = trim(explode(':', $d, 2)[1]);
+			$fecha = explode(' ', $fecha)[0];
+			$fecha = str_replace(':', DIRECTORY_SEPARATOR, $fecha);
+			break;
+		endif;
+	endforeach;
+
+	if ($fecha !== ''):
+		$ruta .= DIRECTORY_SEPARATOR . $fecha;
+	endif;
+
+	return moverArchivoADirectorio($rutaOrigen, $ruta, true, true);
+}
+
+function descartarArchivo(string $rutaOrigen): array
+{
+	$directorioBasura = proyectoRaiz() . DIRECTORY_SEPARATOR . '.basura';
+	return moverArchivoADirectorio($rutaOrigen, $directorioBasura, false, true);
+}
+
+function normalizarSubcarpetaDestino(mixed $valor): ?string
+{
+	$nombre = trim(str_replace('\\', '/', (string) $valor));
+	$nombre = trim($nombre, "/ \t\n\r\0\x0B");
+	if ($nombre === ''):
+		return '';
+	endif;
+	if (
+		str_contains($nombre, '/')
+		|| $nombre === '.'
+		|| $nombre === '..'
+		|| $nombre[0] === '.'
+		|| preg_match('/[\x00-\x1F]/u', $nombre)
+	):
+		return null;
+	endif;
+	return $nombre;
+}
+
+function resolverDestinoLote(mixed $destino, mixed $subcarpeta): array
+{
+	$base = resolverRutaProyecto((string) ($destino ?? ''), 'dir', true);
+	if ($base === null):
+		return ['ok' => false, 'ruta' => '', 'error' => 'La carpeta destino no es válida.'];
+	endif;
+
+	$subcarpeta = normalizarSubcarpetaDestino($subcarpeta);
+	if ($subcarpeta === null):
+		return ['ok' => false, 'ruta' => '', 'error' => 'El nombre de subcarpeta no es válido.'];
+	endif;
+
+	$ruta = $subcarpeta !== '' ? $base . DIRECTORY_SEPARATOR . $subcarpeta : $base;
+	if (!is_dir($ruta) && !mkdir($ruta, 0755, true)):
+		return ['ok' => false, 'ruta' => '', 'error' => 'No se pudo crear la subcarpeta destino.'];
+	endif;
+
+	$real = realpath($ruta);
+	if (!$real || !rutaDentroDeDirectorio($real, proyectoRaiz())):
+		return ['ok' => false, 'ruta' => '', 'error' => 'La carpeta destino queda fuera del proyecto.'];
+	endif;
+
+	return ['ok' => true, 'ruta' => $real, 'error' => ''];
+}
+
+function registrarHeaderDirectorioEliminado(array $resultado): void
+{
+	if (!empty($resultado['directorio_origen_eliminado']) && !empty($resultado['directorio_origen'])):
+		$directorio = !empty($resultado['directorio_eliminado']) ? $resultado['directorio_eliminado'] : $resultado['directorio_origen'];
+		header('X-DAM-Deleted-Dir: ' . rawurlencode($directorio));
+	endif;
+}
+
+function vistaDebeVolverARaiz(array $json): bool
+{
+	$entrada = trim((string) ($json['vista_ruta'] ?? ''));
+	if ($entrada === ''):
+		$entrada = trim((string) ($json['vista_archivo'] ?? ''));
+	endif;
+	if ($entrada === ''):
+		return false;
+	endif;
+
+	return resolverDirectorioVista($json['vista_ruta'] ?? null, $json['vista_archivo'] ?? null) === null;
+}
+
+if (array_key_exists('operacion_lote', $json)):
+	header('Content-Type: application/json; charset=UTF-8');
+	$operacion = (string) ($json['operacion_lote'] ?? '');
+	$rutasEntrada = is_array($json['rutas'] ?? null) ? $json['rutas'] : [];
+	$rutas = [];
+	foreach ($rutasEntrada as $rutaEntrada):
+		$ruta = resolverRutaProyecto($rutaEntrada, 'file', false);
+		if ($ruta !== null):
+			$rutas[$ruta] = $ruta;
+		endif;
+	endforeach;
+
+	if (!in_array($operacion, ['mover', 'archivar', 'borrar'], true) || empty($rutas)):
+		http_response_code(400);
+		echo json_encode([
+			'ok' => false,
+			'mensaje' => 'Operación o archivos inválidos.',
+			'resultados' => [],
+			'redirect_raiz' => false,
+		], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		exit;
+	endif;
+
+	$destinoMover = null;
+	if ($operacion === 'mover'):
+		$destino = resolverDestinoLote($json['destino'] ?? '', $json['subcarpeta'] ?? '');
+		if (!$destino['ok']):
+			http_response_code(400);
+			echo json_encode([
+				'ok' => false,
+				'mensaje' => $destino['error'],
+				'resultados' => [],
+				'redirect_raiz' => false,
+			], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+			exit;
+		endif;
+		$destinoMover = $destino['ruta'];
+	endif;
+
+	$configuracion = cargarConfiguracion();
+	$resultadosOperacion = [];
+	foreach ($rutas as $ruta):
+		if ($operacion === 'mover'):
+			$resultadosOperacion[] = moverArchivoADirectorio($ruta, $destinoMover, true, false);
+		elseif ($operacion === 'archivar'):
+			$resultadosOperacion[] = archivarArchivo($ruta, $configuracion);
+		else:
+			$resultadosOperacion[] = descartarArchivo($ruta);
+		endif;
+	endforeach;
+
+	$ok = array_values(array_filter($resultadosOperacion, static fn($resultado) => !empty($resultado['ok'])));
+	$errores = array_values(array_filter($resultadosOperacion, static fn($resultado) => empty($resultado['ok'])));
+	echo json_encode([
+		'ok' => !empty($ok) && empty($errores),
+		'procesados' => count($ok),
+		'errores' => $errores,
+		'resultados' => $resultadosOperacion,
+		'redirect_raiz' => vistaDebeVolverARaiz($json),
+		'mensaje' => count($ok) . ' archivo' . (count($ok) === 1 ? '' : 's') . ' procesado' . (count($ok) === 1 ? '' : 's') . '.',
+	], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+	exit;
+endif;
+
 if (array_key_exists('sincronizar_palabras_clave', $json)):
 	set_time_limit(0);
 	header('Content-Type: application/x-ndjson; charset=UTF-8');
@@ -72,7 +345,9 @@ if (array_key_exists('relleno_pagina', $json)):
 		$resultados = obtenerResultadosMultimedia($rutaIterador, null, $omitir, $media);
 	endif;
 	$resultados = filtrarResultadosPorMetadatos($resultados, obtenerFiltrosMetadatosDesdeFuente($json));
-	$indice = (($pagina - 1) * $ver) + ($ver - 1);
+	$indice = array_key_exists('indice', $json)
+		? max(0, (int) $json['indice'])
+		: (($pagina - 1) * $ver) + ($ver - 1);
 
 	if (!isset($resultados[$indice])):
 		http_response_code(204);
@@ -330,51 +605,16 @@ elseif (array_key_exists('listo', $json)):
 		exit;
 	endif;
 
-	$ruta = proyectoRaiz() . DIRECTORY_SEPARATOR . rtrim($configuracion['ruta_archivar'] ?? 'listas', '/');
-
-	$fecha = '';
-	$datos = obtenerMetadatos($rutaOrigen)['salida'];
-	foreach ($datos as $d):
-		if (str_starts_with($d, 'DateTimeOriginal')):
-			$fecha = trim(explode(':', $d, 2)[1]);
-			$fecha = explode(' ', $fecha)[0];
-			$fecha = str_replace(':', DIRECTORY_SEPARATOR, $fecha);
-			break;
-		endif;
-	endforeach;
-
-	if (!empty($fecha)):
-		$ruta .= DIRECTORY_SEPARATOR . $fecha;
-		if (!is_dir($ruta)):
-			mkdir($ruta, 0755, true);
-		endif;
-	elseif (!is_dir($ruta)):
-		mkdir($ruta, 0755, true);
-	endif;
-
-	$ruta .= DIRECTORY_SEPARATOR . basename($rutaOrigen);
-
-	if (rename($rutaOrigen, $ruta)):
-		$tipoIndice = tipoMultimediaDesdeRuta($ruta);
-		$indiceMovido = $tipoIndice !== null && moverIndicePalabrasClaveArchivo($rutaOrigen, $ruta, $tipoIndice);
-		if (!$indiceMovido):
-			eliminarIndicePalabrasClaveArchivo($rutaOrigen, false);
-		endif;
-		if (!$indiceMovido && $tipoIndice !== null):
-				actualizarIndicePalabrasClave([[$ruta, $tipoIndice]], 0, true);
-		endif;
-		if (!$indiceMovido):
-			limpiarPalabrasClaveSinUso();
-		endif;
-		echo "1\n:<br>" . escaparHtml(rutaRelativaDesdeProyecto($ruta));
-		$carpetaOriginal = dirname($rutaOrigen);
-		limpiarDirectoriosVacios(
-			$carpetaOriginal,
-			proyectoRaiz()
-		);
+	$resultado = archivarArchivo($rutaOrigen, $configuracion);
+	if ($resultado['ok']):
+		registrarHeaderDirectorioEliminado($resultado);
+		echo "1\n:<br>" . escaparHtml($resultado['destino']);
 	else:
 		echo 'Archivo a mover: ' . escaparHtml($rutaOrigen);
-		echo 'Ubicación nueva: ' . escaparHtml($ruta);
+		echo 'Ubicación nueva: ' . escaparHtml($resultado['destino']);
+		if ($resultado['error'] !== ''):
+			echo '<br>' . escaparHtml($resultado['error']);
+		endif;
 	endif;
 elseif (array_key_exists('borrar', $json)):
 	$rutaBorrar = resolverRutaProyecto($json['borrar'] ?? null, 'file', false);
@@ -383,19 +623,17 @@ elseif (array_key_exists('borrar', $json)):
 		echo 'Archivo a borrar inválido.';
 		exit;
 	endif;
-	$directorioBasura = proyectoRaiz() . DIRECTORY_SEPARATOR . '.basura';
-	if (!is_dir($directorioBasura)):
-		mkdir($directorioBasura, 0755, true);
-	endif;
-	$adonde = $directorioBasura . DIRECTORY_SEPARATOR . basename($rutaBorrar);
-	if (rename($rutaBorrar, $adonde)):
-		eliminarIndicePalabrasClaveArchivo($rutaBorrar, false);
-		eliminarIndicePalabrasClaveArchivo($adonde, false);
-		limpiarPalabrasClaveSinUso();
+
+	$resultado = descartarArchivo($rutaBorrar);
+	if ($resultado['ok']):
+		registrarHeaderDirectorioEliminado($resultado);
 		echo "1\n.";
 	else:
 		echo 'Archivo a mover: ' . escaparHtml($rutaBorrar);
-		echo 'Ubicación nueva: ' . escaparHtml($adonde);
+		echo 'Ubicación nueva: ' . escaparHtml($resultado['destino']);
+		if ($resultado['error'] !== ''):
+			echo '<br>' . escaparHtml($resultado['error']);
+		endif;
 	endif;
 elseif (array_key_exists('extraer', $json)):
 	$rutaExtraer = resolverRutaProyecto($json['extraer'] ?? null, 'file', false);

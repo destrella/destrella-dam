@@ -140,6 +140,7 @@ function aplicarEstadoMetadatosActualizado(id, htmlEstado, respuestaGuardado){
 
 	if (articuloActual && articuloNuevo) {
 		const articuloActivo = articuloActual.classList.contains('activo');
+		const articuloSeleccionado = articuloActual.classList.contains('seleccionado');
 		const figureActual = articuloActual.querySelector('figure');
 		const figureNuevo = articuloNuevo.querySelector('figure');
 		if (figureActual && figureNuevo) {
@@ -148,6 +149,9 @@ function aplicarEstadoMetadatosActualizado(id, htmlEstado, respuestaGuardado){
 		articuloActual.className = articuloNuevo.className;
 		if (articuloActivo) {
 			articuloActual.classList.add('activo');
+		}
+		if (articuloSeleccionado) {
+			articuloActual.classList.add('seleccionado');
 		}
 
 		const estilo = articuloNuevo.getAttribute('style');
@@ -255,45 +259,115 @@ function obtenerParametrosVistaActual(){
 	};
 }
 
-function solicitarRellenoPagina(){
+function normalizarRutaVista(ruta){
+	return (ruta || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+}
+
+function urlRaizCarpetas(){
+	const url = new URL(window.location.href);
+	['archivo', 'ruta', 'pagina', 'palabra_clave'].forEach(parametro => {
+		url.searchParams.delete(parametro);
+	});
+	url.searchParams.set('panel', 'carpetas');
+	return url.toString();
+}
+
+function redirigirARaizCarpetas(){
+	mostrarCargaNavegacion('Volviendo a la raíz');
+	window.location.href = urlRaizCarpetas();
+}
+
+function directorioEliminadoAfectaVista(directorio){
+	const params = new URLSearchParams(window.location.search);
+	const vista = normalizarRutaVista(params.get('ruta') || params.get('archivo') || '');
+	const eliminado = normalizarRutaVista(directorio);
+	return Boolean(vista && eliminado && (vista === eliminado || vista.startsWith(`${eliminado}/`)));
+}
+
+function manejarDirectorioEliminadoDesdeHeader(xhr){
+	const header = xhr.getResponseHeader?.('X-DAM-Deleted-Dir') || '';
+	if (!header) return false;
+	let directorio = header;
+	try {
+		directorio = decodeURIComponent(header);
+	} catch (err) {
+		// El encabezado sigue siendo comparable en crudo si no puede decodificarse.
+	}
+	if (!directorioEliminadoAfectaVista(directorio)) return false;
+	redirigirARaizCarpetas();
+	return true;
+}
+
+function cantidadArticulosVista(){
+	return document.querySelectorAll('main article[data-panel-id]').length;
+}
+
+function solicitarRellenoPagina(indice = null){
 	const main = document.querySelector('main');
-	if (!main) return;
+	if (!main) return Promise.resolve(null);
 
 	const parametros = obtenerParametrosVistaActual();
-	const xhr = new XMLHttpRequest();
-	xhr.open('POST', 'index.php', true);
-	xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-	xhr.onreadystatechange = function(){
-		if (xhr.readyState !== 4 || xhr.status !== 200 || !xhr.responseText.trim()) return;
+	return new Promise(resolve => {
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', 'index.php', true);
+		xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+		xhr.onreadystatechange = function(){
+			if (xhr.readyState !== 4) return;
+			if (xhr.status !== 200 || !xhr.responseText.trim()) {
+				resolve(null);
+				return;
+			}
 
-		const plantilla = document.createElement('template');
-		plantilla.innerHTML = xhr.responseText.trim();
-		const ruta = plantilla.content.querySelector('[data-ruta]')?.dataset.ruta || '';
-		if (ruta && rutaYaVisibleEnMiniaturas(ruta)) return;
+			const plantilla = document.createElement('template');
+			plantilla.innerHTML = xhr.responseText.trim();
+			const ruta = plantilla.content.querySelector('[data-ruta]')?.dataset.ruta || '';
+			if (ruta && rutaYaVisibleEnMiniaturas(ruta)) {
+				resolve(null);
+				return;
+			}
 
-		const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
-		const ultimoArticulo = articulos[articulos.length - 1];
-		if (window.DAM && window.DAM.insertarBloqueHtml) {
-			window.DAM.insertarBloqueHtml(xhr.responseText, ultimoArticulo?.id || '');
+			const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
+			const ultimoArticulo = articulos[articulos.length - 1];
+			let articuloInsertado = null;
+			if (window.DAM && window.DAM.insertarBloqueHtml) {
+				articuloInsertado = window.DAM.insertarBloqueHtml(xhr.responseText, ultimoArticulo?.id || '');
+			}
+			resolve(articuloInsertado);
+		};
+		const payload = {
+			relleno_pagina: true,
+			id: String(Date.now()) + '_' + cantidadArticulosVista(),
+			pagina: parametros.pagina,
+			ver: parametros.ver,
+			media: parametros.media,
+			ruta: parametros.ruta,
+			archivo: parametros.archivo,
+			palabra_clave: parametros.palabra_clave,
+			geo: parametros.geo,
+			regiones: parametros.regiones,
+			rotacion: parametros.rotacion,
+			palabras: parametros.palabras,
+			sugerencias: parametros.sugerencias,
+			duplicadas: parametros.duplicadas,
+			tracking: parametros.tracking
+		};
+		if (Number.isInteger(indice) && indice >= 0) {
+			payload.indice = indice;
 		}
-	};
-	xhr.send(JSON.stringify({
-		relleno_pagina: true,
-		id: String(Date.now()),
-		pagina: parametros.pagina,
-		ver: parametros.ver,
-		media: parametros.media,
-		ruta: parametros.ruta,
-		archivo: parametros.archivo,
-		palabra_clave: parametros.palabra_clave,
-		geo: parametros.geo,
-		regiones: parametros.regiones,
-		rotacion: parametros.rotacion,
-		palabras: parametros.palabras,
-		sugerencias: parametros.sugerencias,
-		duplicadas: parametros.duplicadas,
-		tracking: parametros.tracking
-	}));
+		xhr.send(JSON.stringify(payload));
+	});
+}
+
+async function rellenarVistaHastaCompleta(){
+	const parametros = obtenerParametrosVistaActual();
+	const objetivo = parametros.ver;
+	let intentos = 0;
+	while (cantidadArticulosVista() < objetivo && intentos < objetivo) {
+		const indice = ((parametros.pagina - 1) * objetivo) + cantidadArticulosVista();
+		const articulo = await solicitarRellenoPagina(indice);
+		if (!articulo) break;
+		intentos++;
+	}
 }
 
 function actualizarVistaTrasExtraccion(id, respuestaHtml){
@@ -305,13 +379,13 @@ function actualizarVistaTrasExtraccion(id, respuestaHtml){
 function actualizarVistaTrasMovimiento(id, mensajeHtml){
 	if (window.DAM && window.DAM.removerBloqueArticulo) {
 		window.DAM.removerBloqueArticulo(id, mensajeHtml);
-		solicitarRellenoPagina();
+		rellenarVistaHastaCompleta();
 		return;
 	}
 
 	document.getElementById('art_'+id)?.remove();
 	document.getElementById('pie_'+id)?.remove();
-	solicitarRellenoPagina();
+	rellenarVistaHastaCompleta();
 }
 
 function abrirArchivo(id){
@@ -441,6 +515,7 @@ function mover(id, accion){
 					'</span>';
 					respuesta.innerHTML = mensajeExito;
 					if (accion === 'archivar' || accion === 'borrar') {
+						if (manejarDirectorioEliminadoDesdeHeader(xhr)) return;
 						actualizarVistaTrasMovimiento(id, mensajeExito);
 					} else {
 						imagen.style.opacity = .2;
@@ -970,6 +1045,312 @@ document.addEventListener('DOMContentLoaded', function () {
 	const placeholderPanel = document.querySelector('.panel-detalle-placeholder');
 	const paneles = Array.from(document.querySelectorAll('.panel-articulo[id^="pie_"]'));
 	const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
+	let barraSeleccion = null;
+	let modalMoverLote = null;
+	let operacionLoteEnCurso = false;
+
+	function escaparHtmlCliente(valor) {
+		const nodo = document.createElement('span');
+		nodo.textContent = String(valor ?? '');
+		return nodo.innerHTML;
+	}
+
+	function idArticuloDesdeArticulo(articulo) {
+		return (articulo?.id || '').replace(/^art_/, '');
+	}
+
+	function obtenerSeleccionArchivos() {
+		return Array.from(document.querySelectorAll('main .archivo-seleccion-checkbox:checked'))
+			.map(checkbox => {
+				const articulo = checkbox.closest('article[data-panel-id]');
+				const ruta = checkbox.dataset.ruta || articulo?.querySelector('[data-ruta]')?.dataset.ruta || '';
+				const id = checkbox.dataset.articuloId || idArticuloDesdeArticulo(articulo);
+				return { checkbox, articulo, ruta, id };
+			})
+			.filter(item => item.articulo && item.ruta && item.id);
+	}
+
+	function alternarAccionesLoteOcupadas(ocupadas) {
+		const barra = crearBarraSeleccion();
+		barra.querySelectorAll('button').forEach(boton => {
+			boton.disabled = ocupadas;
+		});
+		if (modalMoverLote) {
+			modalMoverLote.querySelectorAll('button, select, input').forEach(control => {
+				control.disabled = ocupadas;
+			});
+		}
+	}
+
+	function actualizarBarraSeleccion() {
+		const barra = crearBarraSeleccion();
+		const seleccion = obtenerSeleccionArchivos();
+		document.querySelectorAll('main article[data-panel-id]').forEach(articulo => {
+			const checkbox = articulo.querySelector('.archivo-seleccion-checkbox');
+			articulo.classList.toggle('seleccionado', Boolean(checkbox?.checked));
+		});
+
+		barra.hidden = seleccion.length === 0;
+		barra.querySelector('[data-seleccion-total]').textContent =
+			seleccion.length === 1 ? '1 archivo seleccionado' : `${seleccion.length} archivos seleccionados`;
+		if (!operacionLoteEnCurso) {
+			barra.querySelectorAll('button').forEach(boton => {
+				boton.disabled = false;
+			});
+		}
+	}
+
+	function limpiarSeleccionArchivos() {
+		document.querySelectorAll('main .archivo-seleccion-checkbox:checked').forEach(checkbox => {
+			checkbox.checked = false;
+		});
+		actualizarBarraSeleccion();
+	}
+
+	function crearBarraSeleccion() {
+		if (barraSeleccion) return barraSeleccion;
+
+		barraSeleccion = document.createElement('div');
+		barraSeleccion.className = 'acciones-lote';
+		barraSeleccion.hidden = true;
+		barraSeleccion.setAttribute('role', 'region');
+		barraSeleccion.setAttribute('aria-live', 'polite');
+		barraSeleccion.innerHTML =
+			'<strong data-seleccion-total>0 archivos seleccionados</strong>' +
+			'<div class="acciones-lote-botones">' +
+				'<button type="button" data-accion-lote="mover">Mover</button>' +
+				'<button type="button" data-accion-lote="archivar">Archivar</button>' +
+				'<button type="button" data-accion-lote="borrar">Descartar</button>' +
+				'<button type="button" data-accion-lote="limpiar">Limpiar</button>' +
+			'</div>';
+
+		barraSeleccion.addEventListener('click', function (ev) {
+			const boton = ev.target.closest?.('[data-accion-lote]');
+			if (!boton || operacionLoteEnCurso) return;
+			const accion = boton.dataset.accionLote;
+			if (accion === 'mover') {
+				abrirModalMoverLote();
+			} else if (accion === 'archivar' || accion === 'borrar') {
+				operarLoteSeleccionado(accion);
+			} else if (accion === 'limpiar') {
+				limpiarSeleccionArchivos();
+			}
+		});
+
+		const columnaContenido = document.querySelector('.col-contenido');
+		const main = document.querySelector('main');
+		if (columnaContenido && main) {
+			columnaContenido.insertBefore(barraSeleccion, main);
+		} else {
+			document.body.appendChild(barraSeleccion);
+		}
+		return barraSeleccion;
+	}
+
+	function insertarControlSeleccion(articulo) {
+		const figure = articulo?.querySelector('figure');
+		const media = figure?.querySelector('[data-ruta]');
+		if (!figure || !media || figure.querySelector('.seleccion-archivo-control')) return;
+
+		const label = document.createElement('label');
+		label.className = 'seleccion-archivo-control';
+		label.title = 'Seleccionar archivo';
+		label.setAttribute('aria-label', 'Seleccionar archivo');
+
+		const checkbox = document.createElement('input');
+		checkbox.type = 'checkbox';
+		checkbox.className = 'archivo-seleccion-checkbox';
+		checkbox.dataset.articuloId = idArticuloDesdeArticulo(articulo);
+		checkbox.dataset.ruta = media.dataset.ruta || '';
+		checkbox.checked = articulo.classList.contains('seleccionado');
+
+		const texto = document.createElement('span');
+		texto.className = 'seleccion-archivo-texto';
+		texto.textContent = 'Seleccionar archivo';
+
+		label.append(checkbox, texto);
+		label.addEventListener('click', ev => ev.stopPropagation());
+		checkbox.addEventListener('click', ev => ev.stopPropagation());
+		checkbox.addEventListener('change', actualizarBarraSeleccion);
+		figure.prepend(label);
+	}
+
+	function poblarSelectorDestinos(select) {
+		const opciones = new Map();
+		opciones.set('', 'Raíz del proyecto');
+		document.querySelectorAll('.directorio-boton[name="archivo"]').forEach(boton => {
+			const valor = boton.value || '';
+			if (!valor || opciones.has(valor)) return;
+			opciones.set(valor, boton.title || valor);
+		});
+
+		select.textContent = '';
+		opciones.forEach((etiqueta, valor) => {
+			const option = document.createElement('option');
+			option.value = valor;
+			option.textContent = etiqueta;
+			select.appendChild(option);
+		});
+	}
+
+	function cerrarModalMoverLote() {
+		const modal = crearModalMoverLote();
+		modal.hidden = true;
+		modal.querySelector('form')?.reset();
+	}
+
+	function abrirModalMoverLote() {
+		if (!obtenerSeleccionArchivos().length) return;
+		const modal = crearModalMoverLote();
+		const select = modal.querySelector('[name="destino"]');
+		poblarSelectorDestinos(select);
+		modal.hidden = false;
+		requestAnimationFrame(() => select.focus());
+	}
+
+	function crearModalMoverLote() {
+		if (modalMoverLote) return modalMoverLote;
+
+		modalMoverLote = document.createElement('div');
+		modalMoverLote.id = 'modal-mover-lote';
+		modalMoverLote.className = 'modal-lote';
+		modalMoverLote.hidden = true;
+		modalMoverLote.setAttribute('role', 'dialog');
+		modalMoverLote.setAttribute('aria-modal', 'true');
+		modalMoverLote.setAttribute('aria-labelledby', 'modal-mover-lote-titulo');
+		modalMoverLote.innerHTML =
+			'<div class="modal-lote-panel">' +
+				'<form>' +
+					'<h2 id="modal-mover-lote-titulo">Mover archivos</h2>' +
+					'<label>Carpeta destino' +
+						'<select name="destino"></select>' +
+					'</label>' +
+					'<label>Nueva subcarpeta' +
+						'<input type="text" name="subcarpeta" autocomplete="off">' +
+					'</label>' +
+					'<div class="modal-lote-acciones">' +
+						'<button type="button" data-modal-cancelar>Cancelar</button>' +
+						'<button type="submit">Mover</button>' +
+					'</div>' +
+				'</form>' +
+			'</div>';
+
+		modalMoverLote.addEventListener('click', function (ev) {
+			if (ev.target === modalMoverLote || ev.target.closest?.('[data-modal-cancelar]')) {
+				cerrarModalMoverLote();
+			}
+		});
+		modalMoverLote.querySelector('form').addEventListener('submit', async function (ev) {
+			ev.preventDefault();
+			const form = ev.currentTarget;
+			const correcto = await operarLoteSeleccionado('mover', {
+				destino: form.elements.destino.value,
+				subcarpeta: form.elements.subcarpeta.value.trim()
+			});
+			if (correcto) {
+				cerrarModalMoverLote();
+			}
+		});
+		document.addEventListener('keydown', function (ev) {
+			if (ev.key === 'Escape' && !modalMoverLote.hidden) {
+				cerrarModalMoverLote();
+			}
+		});
+		document.body.appendChild(modalMoverLote);
+		return modalMoverLote;
+	}
+
+	function mensajeResultadoLote(operacion, datos) {
+		const etiquetas = {
+			mover: 'Mover',
+			archivar: 'Archivar',
+			borrar: 'Descartar'
+		};
+		const titulo = etiquetas[operacion] || 'Procesar';
+		const procesados = Number(datos?.procesados || 0);
+		const errores = Array.isArray(datos?.errores) ? datos.errores : [];
+		let html = `<p><b>${titulo}:</b> ${procesados} archivo${procesados === 1 ? '' : 's'} procesado${procesados === 1 ? '' : 's'}.</p>`;
+		if (errores.length) {
+			html += '<ul class="errores-lote">';
+			errores.slice(0, 6).forEach(error => {
+				const ruta = error.origen || error.destino || 'Archivo';
+				html += `<li>${escaparHtmlCliente(ruta)}: ${escaparHtmlCliente(error.error || 'No se pudo procesar.')}</li>`;
+			});
+			if (errores.length > 6) {
+				html += `<li>${errores.length - 6} errores más.</li>`;
+			}
+			html += '</ul>';
+		}
+		return html;
+	}
+
+	async function operarLoteSeleccionado(operacion, extra = {}) {
+		const seleccion = obtenerSeleccionArchivos();
+		if (!seleccion.length || operacionLoteEnCurso) return false;
+
+		const textosCarga = {
+			mover: 'Moviendo archivos',
+			archivar: 'Archivando archivos',
+			borrar: 'Descartando archivos'
+		};
+		const parametros = obtenerParametrosVistaActual();
+		let redirigiendo = false;
+		operacionLoteEnCurso = true;
+		alternarAccionesLoteOcupadas(true);
+		mostrarCargaNavegacion(textosCarga[operacion] || 'Procesando archivos');
+
+		try {
+			const respuesta = await fetch('index.php', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+				body: JSON.stringify({
+					operacion_lote: operacion,
+					rutas: seleccion.map(item => item.ruta),
+					destino: extra.destino || '',
+					subcarpeta: extra.subcarpeta || '',
+					vista_ruta: parametros.ruta,
+					vista_archivo: parametros.archivo
+				})
+			});
+			const datos = await respuesta.json().catch(() => null);
+			if (!respuesta.ok || !datos) {
+				throw new Error(datos?.mensaje || `HTTP ${respuesta.status}`);
+			}
+			if (datos.redirect_raiz) {
+				redirigiendo = true;
+				redirigirARaizCarpetas();
+				return true;
+			}
+
+			const rutasProcesadas = new Set(
+				(datos.resultados || [])
+					.filter(resultado => resultado.ok)
+					.map(resultado => normalizarRutaVista(resultado.origen))
+			);
+			seleccion.forEach(item => {
+				if (rutasProcesadas.has(normalizarRutaVista(item.ruta))) {
+					window.DAM.removerBloqueArticulo(item.id, '');
+				}
+			});
+
+			mostrarMensajeDetalle(mensajeResultadoLote(operacion, datos));
+			actualizarBarraSeleccion();
+			if (rutasProcesadas.size > 0) {
+				await rellenarVistaHastaCompleta();
+			}
+			return rutasProcesadas.size > 0;
+		} catch (err) {
+			mostrarMensajeDetalle(`<p class="respuesta_error">${escaparHtmlCliente(err.message || 'No se pudo procesar la selección.')}</p>`);
+			return false;
+		} finally {
+			if (!redirigiendo) {
+				ocultarCargaNavegacion();
+				operacionLoteEnCurso = false;
+				actualizarBarraSeleccion();
+				alternarAccionesLoteOcupadas(false);
+			}
+		}
+	}
 
 	function mostrarPanelArticulo(articulo) {
 		if (!articulo) return;
@@ -1002,6 +1383,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		const figure = articulo.querySelector('figure');
 		if (!panel || !figure) return;
 
+		insertarControlSeleccion(articulo);
 		let contenedor = figure.querySelector('.indicadores-articulo');
 		if (!contenedor) {
 			contenedor = document.createElement('div');
@@ -1190,6 +1572,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 		articulo?.remove();
 		panel?.remove();
+		actualizarBarraSeleccion();
 
 		if (estabaActivo) {
 			mostrarMensajeDetalle(mensajeHtml);

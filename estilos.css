@@ -1549,6 +1549,163 @@ article.activo {
 	outline-offset: 3px;
 }
 
+article.seleccionado {
+	outline: 3px solid var(--outline-success);
+	outline-offset: 3px;
+	background: color-mix(in srgb, var(--outline-success) 8%, transparent);
+}
+
+.seleccion-archivo-control {
+	position: absolute;
+	top: 0.5rem;
+	left: 0.5rem;
+	z-index: 4;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2.5rem;
+	height: 2.5rem;
+	margin: 0;
+	border: 1px solid var(--lbox-close-border);
+	border-radius: 4px;
+	background: var(--lbox-close-bg);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+	cursor: pointer;
+}
+
+.seleccion-archivo-control input {
+	width: 1.35rem;
+	height: 1.35rem;
+	margin: 0;
+	accent-color: var(--accent-primary);
+	cursor: pointer;
+}
+
+.seleccion-archivo-texto {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.acciones-lote {
+	position: sticky;
+	top: 3.1rem;
+	z-index: 7;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	margin: 0 0 0.75rem;
+	padding: 0.5rem 0.65rem;
+	border: 1px solid var(--border-color);
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--bg-body) 94%, var(--accent-primary) 6%);
+	box-shadow: 0 3px 12px var(--shadow-color);
+	font-size: 1rem;
+}
+
+.acciones-lote[hidden] {
+	display: none;
+}
+
+.acciones-lote-botones {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	justify-content: flex-end;
+}
+
+.acciones-lote button,
+.modal-lote button {
+	min-height: 2.25rem;
+	margin: 0;
+	padding: 0.35rem 0.7rem;
+	border: 1px solid var(--btn-border);
+	border-radius: 4px;
+	background: var(--btn-bg);
+	color: var(--text-body);
+	box-shadow: none;
+	font-size: 1rem;
+	font-weight: 700;
+	line-height: 1.1;
+}
+
+.acciones-lote button:hover:not([disabled]),
+.modal-lote button:hover:not([disabled]) {
+	background: var(--btn-hover-bg);
+	border-color: var(--btn-hover-border);
+}
+
+.modal-lote {
+	position: fixed;
+	inset: 0;
+	z-index: 13000;
+	display: grid;
+	place-items: center;
+	padding: 1rem;
+	background: rgba(0, 0, 0, 0.55);
+}
+
+.modal-lote[hidden] {
+	display: none;
+}
+
+.modal-lote-panel {
+	width: min(32rem, calc(100vw - 2rem));
+	max-height: calc(100vh - 2rem);
+	overflow: auto;
+	padding: 1rem;
+	border: 1px solid var(--border-color);
+	border-radius: 8px;
+	background: var(--bg-body);
+	color: var(--text-body);
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.modal-lote h2 {
+	margin: 0 0 0.85rem;
+	font-size: 1.25rem;
+	line-height: 1.2;
+}
+
+.modal-lote label {
+	display: grid;
+	gap: 0.25rem;
+	margin: 0 0 0.75rem;
+	font-size: 0.95rem;
+	font-weight: 700;
+}
+
+.modal-lote select,
+.modal-lote input[type="text"] {
+	width: 100%;
+	min-height: 2.35rem;
+	padding: 0.35rem 0.5rem;
+	border: 1px solid var(--border-color);
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--bg-body) 92%, var(--text-body) 8%);
+	color: var(--text-body);
+	font: inherit;
+}
+
+.modal-lote-acciones {
+	display: flex;
+	gap: 0.5rem;
+	justify-content: flex-end;
+}
+
+.errores-lote {
+	margin: 0.5rem 0 0;
+	padding-left: 1.25rem;
+	color: var(--negative-prompt);
+}
+
 .col-contenido>.paginación.condensado {
 	position: sticky;
 	top: -0.75rem;
