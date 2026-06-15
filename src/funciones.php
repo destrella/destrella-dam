@@ -652,6 +652,322 @@ function parámetrosSD(string $texto): string
  * @param string|null $workflowJson JSON de la clave "Workflow" (información extendida, opcional).
  * @return string HTML con los parámetros extraídos, o cadena vacía si no hay datos.
  */
+function normalizarTextoPromptCUI(mixed $valor): string
+{
+	if (!is_scalar($valor)):
+		return '';
+	endif;
+
+	return trim(str_replace(["\r\n", "\r"], "\n", (string) $valor));
+}
+
+function claveTextoPromptCUI(string $texto): string
+{
+	$normalizado = preg_replace('/\s+/', ' ', trim($texto));
+	return sha1($normalizado ?? $texto);
+}
+
+function agregarPromptCUI(array &$prompts, mixed $valor, string $origen = ''): void
+{
+	$texto = normalizarTextoPromptCUI($valor);
+	if ($texto === ''):
+		return;
+	endif;
+
+	$clave = claveTextoPromptCUI($texto);
+	if (!isset($prompts[$clave])):
+		$prompts[$clave] = [
+			'texto' => $texto,
+			'origenes' => [],
+		];
+	endif;
+	if (
+		$origen !== ''
+		&& !in_array($origen, $prompts[$clave]['origenes'], true)
+	):
+		$prompts[$clave]['origenes'][] = $origen;
+	endif;
+}
+
+function agregarValorUnicoCUI(array &$valores, mixed $valor): void
+{
+	$texto = normalizarTextoPromptCUI($valor);
+	if ($texto === ''):
+		return;
+	endif;
+	$valores[claveTextoPromptCUI($texto)] = $texto;
+}
+
+function agregarParametroUnicoCUI(array &$parametros, string $clave, mixed $valor): void
+{
+	$texto = normalizarTextoPromptCUI($valor);
+	if ($texto === ''):
+		return;
+	endif;
+	$parametros[$clave][claveTextoPromptCUI($texto)] = $texto;
+}
+
+function referenciaNodoCUI(mixed $referencia): ?string
+{
+	if (is_array($referencia) && isset($referencia[0]) && is_scalar($referencia[0])):
+		return (string) $referencia[0];
+	endif;
+	if (is_scalar($referencia)):
+		return (string) $referencia;
+	endif;
+	return null;
+}
+
+function contextoNodoCUI(array $node): string
+{
+	$partes = [
+		$node['class_type'] ?? '',
+		$node['type'] ?? '',
+		$node['_meta']['title'] ?? '',
+		$node['title'] ?? '',
+	];
+
+	return strtolower(implode(' ', array_map('strval', $partes)));
+}
+
+function tipoPromptNodoCUI(array $node): string
+{
+	$contexto = contextoNodoCUI($node);
+	if (str_contains($contexto, 'negative') || str_contains($contexto, 'negativo')):
+		return 'negative';
+	endif;
+	if (str_contains($contexto, 'positive') || str_contains($contexto, 'positivo')):
+		return 'positive';
+	endif;
+	return '';
+}
+
+function etiquetaOrigenPromptCUI(string $nodeId, string $campo): string
+{
+	$partes = [];
+	if ($nodeId !== ''):
+		$partes[] = 'Nodo ' . $nodeId;
+	endif;
+	if ($campo !== ''):
+		$partes[] = $campo;
+	endif;
+	return implode(' - ', $partes);
+}
+
+function textosPromptNodoCUI(array $node, string $nodeId = ''): array
+{
+	$contexto = contextoNodoCUI($node);
+	$esNodoPrompt = str_contains($contexto, 'textencode')
+		|| str_contains($contexto, 'text encode')
+		|| str_contains($contexto, 'prompt');
+	$camposPrompt = [
+		'text' => true,
+		'prompt' => true,
+		'positive_prompt' => true,
+		'negative_prompt' => true,
+		'clip_l' => true,
+		'clip_g' => true,
+		't5xxl' => true,
+		'text_l' => true,
+		'text_g' => true,
+		'global_text' => true,
+		'local_text' => true,
+		'caption' => true,
+	];
+	$resultados = [];
+
+	$inputs = $node['inputs'] ?? [];
+	if (is_array($inputs)):
+		foreach ($inputs as $campo => $valor):
+			if (!is_scalar($valor)):
+				continue;
+			endif;
+			$campoTexto = (string) $campo;
+			$campoNormalizado = strtolower($campoTexto);
+			$esCampoPrompt = isset($camposPrompt[$campoNormalizado])
+				|| str_contains($campoNormalizado, 'prompt')
+				|| ($esNodoPrompt && str_contains($campoNormalizado, 'text'));
+			if (!$esCampoPrompt):
+				continue;
+			endif;
+			$texto = normalizarTextoPromptCUI($valor);
+			if ($texto === ''):
+				continue;
+			endif;
+			$resultados[] = [
+				'texto' => $texto,
+				'origen' => etiquetaOrigenPromptCUI($nodeId, $campoTexto),
+			];
+		endforeach;
+	endif;
+
+	$widgets = $node['widgets_values'] ?? [];
+	if ($esNodoPrompt && is_array($widgets)):
+		foreach ($widgets as $indice => $valor):
+			$texto = normalizarTextoPromptCUI($valor);
+			if ($texto === ''):
+				continue;
+			endif;
+			$resultados[] = [
+				'texto' => $texto,
+				'origen' => etiquetaOrigenPromptCUI($nodeId, 'widget ' . ((int) $indice + 1)),
+			];
+		endforeach;
+	endif;
+
+	return $resultados;
+}
+
+function agregarPromptsNodoCUI(array &$prompts, array $node, string $nodeId = ''): void
+{
+	foreach (textosPromptNodoCUI($node, $nodeId) as $prompt):
+		agregarPromptCUI($prompts, $prompt['texto'], $prompt['origen']);
+	endforeach;
+}
+
+function esSamplerCUI(array $node): bool
+{
+	$contexto = contextoNodoCUI($node);
+	$inputs = $node['inputs'] ?? [];
+	return str_contains($contexto, 'sampler')
+		|| (is_array($inputs) && (isset($inputs['positive']) || isset($inputs['negative'])));
+}
+
+function agregarSamplerCUI(array &$samplers, string $nodeId, array $inputs): void
+{
+	$campos = ['seed', 'steps', 'cfg', 'sampler_name', 'scheduler', 'denoise'];
+	$parametros = [];
+	foreach ($campos as $campo):
+		if (array_key_exists($campo, $inputs)):
+			$texto = normalizarTextoPromptCUI($inputs[$campo]);
+			if ($texto !== ''):
+				$parametros[$campo] = $texto;
+			endif;
+		endif;
+	endforeach;
+	if (empty($parametros)):
+		return;
+	endif;
+
+	$clave = json_encode($parametros, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+	if (!isset($samplers[$clave])):
+		$samplers[$clave] = [
+			'ids' => [],
+			'parametros' => $parametros,
+		];
+	endif;
+	if ($nodeId !== '' && !in_array($nodeId, $samplers[$clave]['ids'], true)):
+		$samplers[$clave]['ids'][] = $nodeId;
+	endif;
+}
+
+function nodosWorkflowCUI(array $workflowData): array
+{
+	$nodos = [];
+	if (isset($workflowData['nodes']) && is_array($workflowData['nodes'])):
+		foreach ($workflowData['nodes'] as $node):
+			if (!is_array($node)):
+				continue;
+			endif;
+			$id = isset($node['id']) && is_scalar($node['id']) ? (string) $node['id'] : (string) count($nodos);
+			$nodos['workflow:' . $id] = $node;
+		endforeach;
+	endif;
+
+	$subgraphs = $workflowData['definitions']['subgraphs'] ?? [];
+	if (is_array($subgraphs)):
+		foreach ($subgraphs as $subgraph):
+			if (!is_array($subgraph)):
+				continue;
+			endif;
+			$prefijo = isset($subgraph['name']) && is_scalar($subgraph['name'])
+				? (string) $subgraph['name']
+				: (string) ($subgraph['id'] ?? 'subgraph');
+			foreach (($subgraph['nodes'] ?? []) as $node):
+				if (!is_array($node)):
+					continue;
+				endif;
+				$id = isset($node['id']) && is_scalar($node['id']) ? (string) $node['id'] : (string) count($nodos);
+				$nodos['workflow:' . $prefijo . ':' . $id] = $node;
+			endforeach;
+		endforeach;
+	endif;
+
+	return $nodos;
+}
+
+function filtrarPromptsDuplicadosCUI(array $prompts, array &$clavesVistas): array
+{
+	$resultado = [];
+	foreach ($prompts as $clave => $prompt):
+		if (isset($clavesVistas[$clave])):
+			continue;
+		endif;
+		$resultado[$clave] = $prompt;
+		$clavesVistas[$clave] = true;
+	endforeach;
+	return $resultado;
+}
+
+function renderizarPromptsCUI(string $leyenda, array $prompts, string $clase): string
+{
+	if (empty($prompts)):
+		return '';
+	endif;
+
+	$html = '<fieldset>';
+	$html .= '<legend>' . htmlspecialchars($leyenda, ENT_QUOTES, 'UTF-8') . '</legend>';
+	$mostrarOrigen = count($prompts) > 1;
+	foreach ($prompts as $prompt):
+		$html .= '<div class="' . htmlspecialchars($clase, ENT_QUOTES, 'UTF-8') . '">';
+		if ($mostrarOrigen && !empty($prompt['origenes'])):
+			$html .= '<small><b>' . htmlspecialchars(implode(', ', $prompt['origenes']), ENT_QUOTES, 'UTF-8') . '</b></small><br>';
+		endif;
+		$html .= nl2br(htmlspecialchars($prompt['texto'], ENT_QUOTES, 'UTF-8'));
+		$html .= '</div>';
+	endforeach;
+	$html .= '</fieldset>';
+
+	return $html;
+}
+
+function etiquetaParametroCUI(string $clave): string
+{
+	return match ($clave) {
+		'sampler_name' => 'Sampler',
+		'cfg' => 'CFG scale',
+		default => ucfirst(str_replace('_', ' ', $clave)),
+	};
+}
+
+function renderizarSamplersCUI(array $samplers): string
+{
+	if (empty($samplers)):
+		return '';
+	endif;
+
+	$html = '';
+	if (count($samplers) === 1):
+		$sampler = reset($samplers);
+		foreach ($sampler['parametros'] as $clave => $valor):
+			$html .= '<li><b>' . htmlspecialchars(etiquetaParametroCUI($clave), ENT_QUOTES, 'UTF-8') . ':</b> ' . htmlspecialchars($valor, ENT_QUOTES, 'UTF-8') . '</li>';
+		endforeach;
+		return $html;
+	endif;
+
+	foreach ($samplers as $sampler):
+		$partes = [];
+		foreach ($sampler['parametros'] as $clave => $valor):
+			$partes[] = '<b>' . htmlspecialchars(etiquetaParametroCUI($clave), ENT_QUOTES, 'UTF-8') . ':</b> ' . htmlspecialchars($valor, ENT_QUOTES, 'UTF-8');
+		endforeach;
+		$ids = !empty($sampler['ids']) ? implode('/', $sampler['ids']) : '';
+		$titulo = trim('Sampler ' . $ids);
+		$html .= '<li><b>' . htmlspecialchars($titulo, ENT_QUOTES, 'UTF-8') . ':</b> ' . implode(', ', $partes) . '</li>';
+	endforeach;
+
+	return $html;
+}
+
 function parámetrosCUI(string $promptJson, ?string $workflowJson = null): string
 {
 	$promptData = json_decode($promptJson, true);
@@ -663,97 +979,103 @@ function parámetrosCUI(string $promptJson, ?string $workflowJson = null): strin
 
 	$nodes = $promptData;
 
-	// Variables a extraer
-	$positivePrompt = '';
-	$negativePrompt = '';
-	$model = '';
-	$vae = '';
-	$seed = '';
-	$steps = '';
-	$cfg = '';
-	$sampler = '';
-	$scheduler = '';
-	$width = '';
-	$height = '';
+	$positivePrompts = [];
+	$negativePrompts = [];
+	$otherPrompts = [];
+	$referencedPromptNodes = [];
+	$models = [];
+	$vaes = [];
+	$sizes = [];
 	$loras = [];
+	$samplers = [];
 	$otherParams = [];
 
-	// 1️⃣ Encontrar el nodo KSampler (contiene referencias a positive/negative)
-	$ksamplerNode = null;
 	foreach ($nodes as $nodeId => $node):
-		if (isset($node['class_type']) && $node['class_type'] === 'KSampler'):
-			$ksamplerNode = $node;
-			break;
+		if (!is_array($node)):
+			continue;
+		endif;
+		$nodeId = (string) $nodeId;
+		$inputs = $node['inputs'] ?? [];
+		if (!is_array($inputs)):
+			$inputs = [];
+		endif;
+
+		if (esSamplerCUI($node)):
+			agregarSamplerCUI($samplers, $nodeId, $inputs);
+
+			$positiveNodeId = referenciaNodoCUI($inputs['positive'] ?? null);
+			if ($positiveNodeId !== null && isset($nodes[$positiveNodeId]) && is_array($nodes[$positiveNodeId])):
+				agregarPromptsNodoCUI($positivePrompts, $nodes[$positiveNodeId], $positiveNodeId);
+				$referencedPromptNodes[$positiveNodeId] = true;
+			endif;
+
+			$negativeNodeId = referenciaNodoCUI($inputs['negative'] ?? null);
+			if ($negativeNodeId !== null && isset($nodes[$negativeNodeId]) && is_array($nodes[$negativeNodeId])):
+				agregarPromptsNodoCUI($negativePrompts, $nodes[$negativeNodeId], $negativeNodeId);
+				$referencedPromptNodes[$negativeNodeId] = true;
+			endif;
 		endif;
 	endforeach;
 
-	// 2️⃣ Si hay KSampler, extraer referencias y parámetros directos
-	if ($ksamplerNode && isset($ksamplerNode['inputs'])):
-		$inputs = $ksamplerNode['inputs'];
-
-		// Referencia al prompt positivo
-		if (isset($inputs['positive']) && is_array($inputs['positive']) && count($inputs['positive']) >= 1):
-			$positiveNodeId = $inputs['positive'][0];
-			if (isset($nodes[$positiveNodeId]) && isset($nodes[$positiveNodeId]['inputs']['text'])):
-				$positivePrompt = $nodes[$positiveNodeId]['inputs']['text'];
-			endif;
-		endif;
-
-		// Referencia al prompt negativo
-		if (isset($inputs['negative']) && is_array($inputs['negative']) && count($inputs['negative']) >= 1):
-			$negativeNodeId = $inputs['negative'][0];
-			if (isset($nodes[$negativeNodeId]) && isset($nodes[$negativeNodeId]['inputs']['text'])):
-				$negativePrompt = $nodes[$negativeNodeId]['inputs']['text'];
-			endif;
-		endif;
-
-		// Parámetros del sampler
-		$seed = $inputs['seed'] ?? '';
-		$steps = $inputs['steps'] ?? '';
-		$cfg = $inputs['cfg'] ?? '';
-		$sampler = $inputs['sampler_name'] ?? '';
-		$scheduler = $inputs['scheduler'] ?? '';
-	endif;
-
-	// 3️⃣ Recorrer todos los nodos para extraer otros datos (modelo, VAE, tamaño, LoRAs, etc.)
 	foreach ($nodes as $nodeId => $node):
-		if (!isset($node['class_type'])):
+		if (!is_array($node)):
 			continue;
 		endif;
+		$nodeId = (string) $nodeId;
 
-		$class = $node['class_type'];
+		$class = (string) ($node['class_type'] ?? '');
 		$inputs = $node['inputs'] ?? [];
+		if (!is_array($inputs)):
+			$inputs = [];
+		endif;
 
 		switch ($class):
 			case 'UNETLoader':
 				if (isset($inputs['unet_name'])):
-					$model = $inputs['unet_name'];
+					agregarValorUnicoCUI($models, $inputs['unet_name']);
+				endif;
+				break;
+
+			case 'CheckpointLoader':
+			case 'CheckpointLoaderSimple':
+				if (isset($inputs['ckpt_name'])):
+					agregarValorUnicoCUI($models, $inputs['ckpt_name']);
 				endif;
 				break;
 
 			case 'VAELoader':
 				if (isset($inputs['vae_name'])):
-					$vae = $inputs['vae_name'];
+					agregarValorUnicoCUI($vaes, $inputs['vae_name']);
 				endif;
 				break;
 
 			case 'EmptyLatentImage':
-				$width = $inputs['width'] ?? '';
-				$height = $inputs['height'] ?? '';
+			case 'EmptySD3LatentImage':
+			case 'ImageScale':
+				if (isset($inputs['width'], $inputs['height'])):
+					agregarValorUnicoCUI($sizes, $inputs['width'] . ' x ' . $inputs['height']);
+				endif;
 				break;
 
 			case 'ModelSamplingSD3':
+			case 'ModelSamplingAuraFlow':
 				if (isset($inputs['shift'])):
-					$otherParams['shift'] = $inputs['shift'];
+					agregarParametroUnicoCUI($otherParams, 'shift', $inputs['shift']);
 				endif;
 				break;
 
 			case 'DualCLIPLoader':
 				if (isset($inputs['clip_name1'])):
-					$otherParams['text_encoder1'] = $inputs['clip_name1'];
+					agregarParametroUnicoCUI($otherParams, 'text_encoder1', $inputs['clip_name1']);
 				endif;
 				if (isset($inputs['clip_name2'])):
-					$otherParams['text_encoder2'] = $inputs['clip_name2'];
+					agregarParametroUnicoCUI($otherParams, 'text_encoder2', $inputs['clip_name2']);
+				endif;
+				break;
+
+			case 'CLIPLoader':
+				if (isset($inputs['clip_name'])):
+					agregarParametroUnicoCUI($otherParams, 'text_encoder', $inputs['clip_name']);
 				endif;
 				break;
 
@@ -763,14 +1085,43 @@ function parámetrosCUI(string $promptJson, ?string $workflowJson = null): strin
 					$loraName = $inputs['lora_name'] ?? '';
 					$loraWeight = $inputs['strength_model'] ?? $inputs['strength'] ?? 1.0;
 					if ($loraName):
-						$loras[] = ['name' => $loraName, 'weight' => $loraWeight];
+						$clave = claveTextoPromptCUI((string) $loraName . '|' . (string) $loraWeight);
+						$loras[$clave] = ['name' => $loraName, 'weight' => $loraWeight];
 					endif;
 				endif;
 				break;
 		endswitch;
+
+		if (!isset($referencedPromptNodes[$nodeId])):
+			$tipoPrompt = tipoPromptNodoCUI($node);
+			if ($tipoPrompt === 'negative'):
+				agregarPromptsNodoCUI($negativePrompts, $node, $nodeId);
+			elseif ($tipoPrompt === 'positive'):
+				agregarPromptsNodoCUI($positivePrompts, $node, $nodeId);
+			else:
+				agregarPromptsNodoCUI($otherPrompts, $node, $nodeId);
+			endif;
+		endif;
 	endforeach;
 
-	// 4️⃣ Información adicional desde el Workflow (notas, etc.)
+	if (is_array($workflowData)):
+		foreach (nodosWorkflowCUI($workflowData) as $nodeId => $node):
+			$tipoPrompt = tipoPromptNodoCUI($node);
+			if ($tipoPrompt === 'negative'):
+				agregarPromptsNodoCUI($negativePrompts, $node, $nodeId);
+			elseif ($tipoPrompt === 'positive'):
+				agregarPromptsNodoCUI($positivePrompts, $node, $nodeId);
+			else:
+				agregarPromptsNodoCUI($otherPrompts, $node, $nodeId);
+			endif;
+		endforeach;
+	endif;
+
+	$clavesPromptsVistas = [];
+	$positivePrompts = filtrarPromptsDuplicadosCUI($positivePrompts, $clavesPromptsVistas);
+	$negativePrompts = filtrarPromptsDuplicadosCUI($negativePrompts, $clavesPromptsVistas);
+	$otherPrompts = filtrarPromptsDuplicadosCUI($otherPrompts, $clavesPromptsVistas);
+
 	$workflowNotes = '';
 	if ($workflowData && isset($workflowData['nodes'])):
 		foreach ($workflowData['nodes'] as $node):
@@ -783,29 +1134,14 @@ function parámetrosCUI(string $promptJson, ?string $workflowJson = null): strin
 		endforeach;
 	endif;
 
-	// 5️⃣ Construcción del HTML
 	$html = '';
 
-	// Prompt positivo
-	if ($positivePrompt !== ''):
-		$html .= '<fieldset>';
-		$html .= '<legend>Prompt</legend>';
-		$html .= '<div class="prompt">' . htmlspecialchars($positivePrompt) . '</div>';
-		$html .= '</fieldset>';
-	endif;
+	$html .= renderizarPromptsCUI('Prompt', $positivePrompts, 'prompt');
+	$html .= renderizarPromptsCUI('Prompt Negativo', $negativePrompts, 'negative-prompt');
+	$html .= renderizarPromptsCUI('Prompts adicionales', $otherPrompts, 'prompt');
 
-	// Prompt negativo
-	if ($negativePrompt !== ''):
-		$html .= '<fieldset>';
-		$html .= '<legend>Prompt Negativo</legend>';
-		$html .= '<div class="negative-prompt">' . htmlspecialchars($negativePrompt) . '</div>';
-		$html .= '</fieldset>';
-	endif;
-
-	// Otros parámetros
 	if (
-		$model !== '' || $vae !== '' || $seed !== '' || $steps !== '' || $cfg !== '' ||
-		$sampler !== '' || $scheduler !== '' || $width !== '' || $height !== '' ||
+		!empty($models) || !empty($vaes) || !empty($sizes) || !empty($samplers) ||
 		!empty($loras) || !empty($otherParams) || $workflowNotes !== ''
 	):
 
@@ -813,52 +1149,35 @@ function parámetrosCUI(string $promptJson, ?string $workflowJson = null): strin
 		$html .= '<legend>Otros</legend>';
 		$html .= '<ul>';
 
-		// Modelo
-		if ($model !== ''):
+		if (!empty($models)):
 			global $nombreModelo;
-			$nombreModelo = $model;
-			$html .= '<li class="model">🔥 <b>Modelo:</b> ' . htmlspecialchars($model) . '</li>';
+			$nombreModelo = reset($models);
+			foreach ($models as $model):
+				$html .= '<li class="model">🔥 <b>Modelo:</b> ' . htmlspecialchars($model, ENT_QUOTES, 'UTF-8') . '</li>';
+			endforeach;
 		endif;
 
-		// VAE
-		if ($vae !== ''):
-			$html .= '<li><b>VAE:</b> ' . htmlspecialchars($vae) . '</li>';
-		endif;
+		foreach ($vaes as $vae):
+			$html .= '<li><b>VAE:</b> ' . htmlspecialchars($vae, ENT_QUOTES, 'UTF-8') . '</li>';
+		endforeach;
 
-		// LoRAs
 		foreach ($loras as $lora):
-			$html .= '<li>🧠 <b>' . htmlspecialchars($lora['name']) . '</b> (weight ' . htmlspecialchars((string) $lora['weight']) . ')</li>';
+			$html .= '<li>🧠 <b>' . htmlspecialchars((string) $lora['name'], ENT_QUOTES, 'UTF-8') . '</b> (weight ' . htmlspecialchars((string) $lora['weight'], ENT_QUOTES, 'UTF-8') . ')</li>';
 		endforeach;
 
-		// Dimensiones
-		if ($width !== '' && $height !== ''):
-			$html .= '<li><b>Size:</b> 📐 ' . htmlspecialchars("{$width} × {$height}") . '</li>';
-		endif;
+		foreach ($sizes as $size):
+			$html .= '<li><b>Size:</b> 📐 ' . htmlspecialchars($size, ENT_QUOTES, 'UTF-8') . '</li>';
+		endforeach;
 
-		// Parámetros del sampler
-		if ($seed !== ''):
-			$html .= '<li><b>Seed:</b> 🎲 ' . htmlspecialchars((string) $seed) . '</li>';
-		endif;
-		if ($steps !== ''):
-			$html .= '<li><b>Steps:</b> ' . htmlspecialchars((string) $steps) . '</li>';
-		endif;
-		if ($cfg !== ''):
-			$html .= '<li><b>CFG scale:</b> ' . htmlspecialchars((string) $cfg) . '</li>';
-		endif;
-		if ($sampler !== ''):
-			$html .= '<li><b>Sampler:</b> ' . htmlspecialchars($sampler) . '</li>';
-		endif;
-		if ($scheduler !== ''):
-			$html .= '<li><b>Scheduler:</b> ' . htmlspecialchars($scheduler) . '</li>';
-		endif;
+		$html .= renderizarSamplersCUI($samplers);
 
-		// Otros parámetros extra (shift, text_encoders, etc.)
-		foreach ($otherParams as $key => $value):
+		foreach ($otherParams as $key => $values):
 			$label = ucfirst(str_replace('_', ' ', $key));
-			$html .= '<li><b>' . htmlspecialchars($label) . ':</b> ' . htmlspecialchars((string) $value) . '</li>';
+			foreach ($values as $value):
+				$html .= '<li><b>' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . ':</b> ' . htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8') . '</li>';
+			endforeach;
 		endforeach;
 
-		// Notas del workflow
 		if ($workflowNotes !== ''):
 			$html .= '<li><details><summary><b>Notas:</b></summary> ' . nl2br(htmlspecialchars($workflowNotes)) . '</details></li>';
 		endif;
@@ -867,7 +1186,6 @@ function parámetrosCUI(string $promptJson, ?string $workflowJson = null): strin
 		$html .= '</fieldset>';
 	endif;
 
-	// Envolver en <details> si hay contenido
 	if ($html !== ''):
 		$html = '<details open class="psd metadata-ia"><summary>Parámetros ComfyUI</summary>' . $html . '</details>';
 	endif;
