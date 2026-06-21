@@ -708,6 +708,73 @@ document.addEventListener('DOMContentLoaded', function () {
 		mostrarCargaNavegacion('Cargando página');
 	});
 
+	/* ─────────── Resolver dirección desde GEO ─────────── */
+	document.addEventListener('click', function (ev) {
+		const btn = ev.target.closest?.('.geo-resolver');
+		if (!btn) return;
+		const id = btn.dataset.id;
+		const panel = document.getElementById('pie_' + id);
+		const respuesta = document.getElementById('respuesta_' + id);
+		if (!panel || !respuesta) return;
+		btn.disabled = true;
+		btn.textContent = '⏳';
+		const xhr = new XMLHttpRequest();
+		xhr.open('POST', 'index.php', true);
+		xhr.setRequestHeader('Content-Type', 'application/json;charset=UTF-8');
+		xhr.onreadystatechange = function () {
+			if (xhr.readyState !== 4) return;
+			if (xhr.status === 200) {
+				try {
+					const datos = JSON.parse(xhr.responseText);
+					if (datos.ok) {
+						// Poblar campos ocultos para que "Guardar datos" los persista
+						const geoCountry = document.getElementById('geo_country_' + id);
+						const geoCountryCode = document.getElementById('geo_country_code_' + id);
+						const geoState = document.getElementById('geo_state_' + id);
+						const geoCity = document.getElementById('geo_city_' + id);
+						const locInput = document.getElementById('location_' + id);
+						if (geoCountry) geoCountry.value = datos.country || '';
+						if (geoCountryCode) geoCountryCode.value = datos.country_code || '';
+						if (geoState) geoState.value = datos.state || '';
+						if (geoCity) geoCity.value = datos.city || '';
+						// También poblar el campo de ubicación si está vacío
+						if (locInput && !locInput.value.trim()) {
+							locInput.value = [datos.city, datos.state].filter(Boolean).join(', ');
+						}
+						const geoDiv = btn.closest('.metadata-geo');
+						if (geoDiv) {
+							// Remover el botón y mostrar los datos obtenidos
+							btn.remove();
+							const partes = [];
+							if (datos.city) partes.push('🗺️ ' + datos.city);
+							if (datos.state) partes.push(datos.state);
+							if (datos.country) partes.push(datos.country);
+							const info = document.createElement('div');
+							info.textContent = partes.join(', ');
+							geoDiv.appendChild(info);
+						}
+						respuesta.innerHTML = '<code>Dirección resuelta: ' +
+							[datos.city, datos.state, datos.country].filter(Boolean).join(', ') + '</code>';
+						return; // btn ya fue eliminado
+					} else {
+						respuesta.innerHTML = '<code>No se encontró dirección para estas coordenadas.</code>';
+					}
+				} catch (e) {
+					respuesta.innerHTML = '<code>Error al procesar la respuesta.</code>';
+				}
+			} else {
+				respuesta.innerHTML = '<code>Error del servidor.</code>';
+			}
+			btn.disabled = false;
+			btn.textContent = '🌐';
+		};
+		xhr.send(JSON.stringify({
+			resolver_geo: true,
+			lat: btn.dataset.lat,
+			lon: btn.dataset.lon
+		}));
+	});
+
 	const claveColumnaCarpetas = 'dam.columnaCarpetas.colapsada';
 	const claveArbolDirectorios = 'dam.arbolDirectorios.ramasAbiertas';
 

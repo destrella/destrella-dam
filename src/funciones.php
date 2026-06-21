@@ -148,6 +148,99 @@ function obtenerUbicaciones(): array
 }
 
 /**
+ * Resuelve coordenadas geográficas a dirección (país, ciudad, estado)
+ * usando Nominatim (OpenStreetMap).
+ *
+ * Los resultados se almacenan en cache_geo para evitar consultas repetidas.
+ *
+ * @param float $lat Latitud.
+ * @param float $lon Longitud.
+ * @return array Con claves Country, CountryCode, State, City (pueden ser null).
+ */
+function resolverGeoNominatim(float $lat, float $lon): array
+{
+	$latCache = round($lat, 3);
+	$lonCache = round($lon, 3);
+	$cacheKey = $latCache . ',' . $lonCache;
+
+	$dbFile = proyectoRaiz() . DIRECTORY_SEPARATOR . 'datos' . DIRECTORY_SEPARATOR . 'ubicaciones.sqlite';
+	$pdoExiste = is_file($dbFile);
+
+	if ($pdoExiste):
+		try {
+			$pdo = new PDO("sqlite:$dbFile");
+			$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+			$stmt = $pdo->prepare("SELECT Country, CountryCode, State, City FROM cache_geo WHERE cache_key = ?");
+			$stmt->execute([$cacheKey]);
+			$geo = $stmt->fetch(PDO::FETCH_ASSOC);
+			if ($geo && ($geo['Country'] !== null || $geo['City'] !== null)):
+				return $geo;
+			endif;
+		} catch (\PDOException $e) {
+			$pdoExiste = false;
+		}
+	endif;
+
+	$url = "https://nominatim.openstreetmap.org/reverse?"
+		. "format=json"
+		. "&lat=" . rawurlencode((string) $latCache)
+		. "&lon=" . rawurlencode((string) $lonCache)
+		. "&addressdetails=1"
+		. "&accept-language=es,en";
+
+	$opts = [
+		'http' => [
+			'header' => "User-Agent: DAM-PHP-Geo/1.0\r\n",
+			'timeout' => 10,
+		]
+	];
+
+	$context = stream_context_create($opts);
+	$json = @file_get_contents($url, false, $context);
+
+	if (!$json):
+		return ['Country' => null, 'CountryCode' => null, 'State' => null, 'City' => null];
+	endif;
+
+	$data = json_decode($json, true);
+	$address = $data['address'] ?? [];
+
+	$country = $address['country'] ?? null;
+	$countryCode = strtoupper($address['country_code'] ?? '');
+	$state = $address['state'] ?? $address['province'] ?? $address['region'] ?? $address['state_district'] ?? $address['county'] ?? null;
+	$city = $address['city'] ?? $address['town'] ?? $address['village'] ?? $address['municipality'] ?? $address['suburb'] ?? null;
+
+	// Guardar en caché
+	if ($pdoExiste):
+		try {
+			$pdo->exec("
+				CREATE TABLE IF NOT EXISTS cache_geo (
+					cache_key TEXT PRIMARY KEY,
+					lat REAL, lon REAL,
+					Country TEXT, CountryCode TEXT,
+					State TEXT, City TEXT
+				)
+			");
+			$stmt = $pdo->prepare("
+				INSERT OR REPLACE INTO cache_geo
+				(cache_key, lat, lon, Country, CountryCode, State, City)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			");
+			$stmt->execute([$cacheKey, $latCache, $lonCache, $country, $countryCode, $state, $city]);
+		} catch (\PDOException $e) {
+			// Ignorar errores de caché
+		}
+	endif;
+
+	return [
+		'Country' => $country,
+		'CountryCode' => $countryCode,
+		'State' => $state,
+		'City' => $city,
+	];
+}
+
+/**
  * Inicializa el esquema SQLite de identidades y usuarios conocidos.
  *
  * La tabla `identidades` conserva la lista de nombres sugeridos como JSON y
@@ -3883,6 +3976,19 @@ function crearBloque($ruta, $id, $tipo = 'img')
 	// 20251007_225444-4206013910-cyberillustrious_v40-DPM++ 2M-25
 	list($createDate, $zonaHoraria) = devolverFecha(basename($ruta));
 
+	// Priorizar los valores EXIF OffsetTime/OffsetTimeOriginal/OffsetTimeDigitized
+	// sobre los inferidos del nombre de archivo o el default. La metadata EXIF
+	// tiene la zona horaria real del dispositivo que capturó el archivo.
+	$offsetExif = $meta['OffsetTime'] ?? $meta['OffsetTimeOriginal'] ?? $meta['OffsetTimeDigitized'] ?? '';
+	if ($offsetExif !== ''):
+		$zonaHoraria = $offsetExif;
+		// Si el offset viene de EXIF, no marcarlo como sugerido
+		$sugerido = array_values(array_filter(
+			$sugerido,
+			static fn(string $s): bool => $s !== 'Offset'
+		));
+	endif;
+
 	$copyrightdefault = '';
 	$crtmp = '';
 	$fechaArchivo = '';
@@ -4050,10 +4156,15 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		if (!empty($locationval)):
 			$txtgeo .= '<b>' . htmlspecialchars($locationval, ENT_QUOTES, 'UTF-8') . '</b><br>';
 		endif;
+		$lat = (string) $meta['GPSLatitude'];
+		$lon = (string) $meta['GPSLongitude'];
+		$urlMapa = 'https://www.google.com/maps?q=' . rawurlencode($lat . ',' . $lon);
 		$txtgeo .=
 			'<span style="user-select:none">📍 </span>' .
-			htmlspecialchars((string) $meta['GPSLatitude'], ENT_QUOTES, 'UTF-8') . ',' .
-			htmlspecialchars((string) $meta['GPSLongitude'], ENT_QUOTES, 'UTF-8');
+			'<a href="' . htmlspecialchars($urlMapa, ENT_QUOTES, 'UTF-8') . '" target="mapa" title="Abrir en Google Maps">' .
+			htmlspecialchars($lat, ENT_QUOTES, 'UTF-8') . ',' .
+			htmlspecialchars($lon, ENT_QUOTES, 'UTF-8') .
+			'</a>';
 		if (isset($meta['City'])):
 			$txtgeo .= '<br>🗺️ ' . htmlspecialchars((string) $meta['City'], ENT_QUOTES, 'UTF-8');
 		endif;
@@ -4064,6 +4175,13 @@ function crearBloque($ruta, $id, $tipo = 'img')
 			$txtgeo .= '<br>' .
 				banderaDesdeCountryCode($meta['CountryCode'] ?? '') . ' ' .
 				htmlspecialchars((string) $meta['Country'], ENT_QUOTES, 'UTF-8');
+		else:
+			// Sin datos de país/ciudad — botón para resolver con Nominatim
+			$txtgeo .= ' <button type="button" class="geo-resolver"'
+				. ' data-lat="' . htmlspecialchars($lat, ENT_QUOTES, 'UTF-8') . '"'
+				. ' data-lon="' . htmlspecialchars($lon, ENT_QUOTES, 'UTF-8') . '"'
+				. ' data-id="' . $id . '"'
+				. ' title="Resolver dirección con OpenStreetMap">🌐</button>';
 		endif;
 		$txtgeo .= '</div>';
 	endif;
@@ -4193,6 +4311,12 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		' placeholder="Nombre de ubicación"' .
 		' list="Ubicaciones"' .
 		'>';
+
+	// Campos ocultos para datos de geocodificación (se rellenan al resolver)
+	$html .= '<input type="hidden" id="geo_country_' . $id . '" name="geo_country" value="">';
+	$html .= '<input type="hidden" id="geo_country_code_' . $id . '" name="geo_country_code" value="">';
+	$html .= '<input type="hidden" id="geo_state_' . $id . '" name="geo_state" value="">';
+	$html .= '<input type="hidden" id="geo_city_' . $id . '" name="geo_city" value="">';
 
 	$html .= $txtgeo;
 	$html .=

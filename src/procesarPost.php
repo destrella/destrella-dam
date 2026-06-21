@@ -621,6 +621,24 @@ elseif (array_key_exists('subject', $json)):
 			endforeach;
 		endif;
 	endif;
+
+	// Datos de geocodificación directa (resueltos con 🌐, no requieren UBICACIONES)
+	$geoCountry = trim((string) ($json['geo_country'] ?? ''));
+	$geoCountryCode = trim((string) ($json['geo_country_code'] ?? ''));
+	$geoState = trim((string) ($json['geo_state'] ?? ''));
+	$geoCity = trim((string) ($json['geo_city'] ?? ''));
+	if ($geoCountry !== ''):
+		$argumentos[] = argumentoExifTool('XMP:Country', $geoCountry);
+	endif;
+	if ($geoCountryCode !== ''):
+		$argumentos[] = argumentoExifTool('XMP:CountryCode', $geoCountryCode);
+	endif;
+	if ($geoState !== ''):
+		$argumentos[] = argumentoExifTool('XMP:State', $geoState);
+	endif;
+	if ($geoCity !== ''):
+		$argumentos[] = argumentoExifTool('XMP:City', $geoCity);
+	endif;
 	//echo ']';
 
 	$comando = comandoBrewSeguro(array_merge(
@@ -690,6 +708,23 @@ elseif (array_key_exists('extraer', $json)):
 elseif (array_key_exists('convertir', $json)):
 	$rutaConvertir = resolverRutaTolerante($json['convertir'] ?? null, 'file', false);
 	echo $rutaConvertir !== null ? convertirWebP($rutaConvertir) : 'No se encontró un archivo válido para convertir.';
+elseif (array_key_exists('resolver_geo', $json)):
+	header('Content-Type: application/json; charset=UTF-8');
+	$lat = (float) ($json['lat'] ?? 0);
+	$lon = (float) ($json['lon'] ?? 0);
+	if ($lat === 0.0 && $lon === 0.0):
+		echo json_encode(['ok' => false, 'error' => 'Coordenadas inválidas.']);
+		exit;
+	endif;
+	$geo = resolverGeoNominatim($lat, $lon);
+	$tieneDatos = $geo['Country'] !== null || $geo['City'] !== null;
+	echo json_encode([
+		'ok' => $tieneDatos,
+		'country' => $geo['Country'] ?? '',
+		'country_code' => $geo['CountryCode'] ?? '',
+		'state' => $geo['State'] ?? '',
+		'city' => $geo['City'] ?? '',
+	], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 endif;
 exit;
 ?>
