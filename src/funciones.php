@@ -3583,7 +3583,19 @@ function devolverFecha(string $texto): array
 	];
 	$zona = '';
 	$zonaDefault = '-0600';
-	if (str_ends_with(substr($texto, 0, 11), 'T')):
+	if (stripos($texto, 'a la(s)') !== FALSE):
+		// Grabación de pantalla 2025-12-31 a la(s) 21.18.26
+		// Captura de pantalla 2026-06-20 a la(s) 22.34.28
+		$fechayhora = explode(' ', $texto);
+		list($fecha['año'], $fecha['mes'], $fecha['día']) = explode('-', $fechayhora[3]);
+		$fecha['año'] .= '-';
+		$fecha['mes'] .= '-';
+		$fecha['día'] .= 'T';
+		list($fecha['hora'], $fecha['minuto'], $fecha['segundo']) = explode('.', $fechayhora[6]);
+		$fecha['hora'] .= ':';
+		$fecha['minuto'] .= ':';
+		$zona = $zonaDefault;
+	elseif (str_ends_with(substr($texto, 0, 11), 'T')):
 		// 2024-08-12T10-11-03 Anna Bridget Barrett.mp4
 		// 2024-08-12T09-23-10.000Z Mieun Jo.mp4
 		// 2024-12-12T13-51-00-0600 Karla Cejas Gutiérrez.mp4
@@ -3825,47 +3837,50 @@ function crearBloque($ruta, $id, $tipo = 'img')
 
 	if (is_numeric($crtmp)):
 		$copyrightdefault = '©' . $crtmp . ' ';
-		$crntmp = explode(' ', pathinfo($ruta)['filename']);
-		unset($crntmp[0]);
-		if (!empty($crntmp)):
-			if (is_array($crntmp)):
-				foreach ($crntmp as $k => $v):
-					if (
-						str_starts_with($v, 'IMG_')
-						|| str_starts_with($v, 'photo')
-					):
-						unset($crntmp[$k]);
-					endif;
-					if (str_ends_with($v, '_source')):
-						unset($crntmp[$k]);
-					endif;
-					if (str_ends_with($v, ')')):
-						$v = preg_replace('/\(\d+\)$/', '', $v);
-						$crntmp[$k] = $v;
-					endif;
-				endforeach;
-			endif;
-			$nombreabuscar = implode(' ', $crntmp);
-			$nombresSugeridos = obtenerNombresPorUsuario($nombreabuscar);
-			if (!empty($nombresSugeridos)):
-				$copyrightdefault .= implode(' ', $nombresSugeridos);
-				if (!isset($meta['Parameters'])):
-					if (!$subject):
-						$subject = '' . implode(', ', $nombresSugeridos) . ', ';
-						$sugerido[] = 'Subject';
-					elseif (in_array('Subject', $sugerido)):
-						$subject = implode(', ', $nombresSugeridos) . ', ' . $subject;
-					endif;
+		if(stripos(pathinfo($ruta)['filename'], ' a la(s) ') === FALSE):
+			$crntmp = explode(' ', pathinfo($ruta)['filename']);
+			unset($crntmp[0]);
+			if (!empty($crntmp)):
+				if (is_array($crntmp)):
+					foreach ($crntmp as $k => $v):
+						if (
+							str_starts_with($v, 'IMG_')
+							|| str_starts_with($v, 'photo')
+						):
+							unset($crntmp[$k]);
+						endif;
+						if (str_ends_with($v, '_source')):
+							unset($crntmp[$k]);
+						endif;
+						if (str_ends_with($v, ')')):
+							$v = preg_replace('/\(\d+\)$/', '', $v);
+							$crntmp[$k] = $v;
+						endif;
+					endforeach;
 				endif;
-			else:
-				$copyrightdefault .= $nombreabuscar;
-				if (!$subject && !isset($meta['Parameters'])):
-					if (!str_starts_with($nombreabuscar, 'cosplay')):
-						$subject = '' . $nombreabuscar . ', ';
-					else:
-						$subject = 'cosplay, ';
+				$nombreabuscar = implode(' ', $crntmp);
+				$nombreabuscar = explode('-keyframe', $nombreabuscar)[0];
+				$nombresSugeridos = obtenerNombresPorUsuario($nombreabuscar);
+				if (!empty($nombresSugeridos)):
+					$copyrightdefault .= implode(' ', $nombresSugeridos);
+					if (!isset($meta['Parameters'])):
+						if (!$subject):
+							$subject = '' . implode(', ', $nombresSugeridos) . ', ';
+							$sugerido[] = 'Subject';
+						elseif (in_array('Subject', $sugerido)):
+							$subject = implode(', ', $nombresSugeridos) . ', ' . $subject;
+						endif;
 					endif;
-					$sugerido[] = 'Subject';
+				else:
+					$copyrightdefault .= $nombreabuscar;
+					if (!$subject && !isset($meta['Parameters'])):
+						if (!str_starts_with($nombreabuscar, 'cosplay')):
+							$subject = '' . $nombreabuscar . ', ';
+						else:
+							$subject = 'cosplay, ';
+						endif;
+						$sugerido[] = 'Subject';
+					endif;
 				endif;
 			endif;
 		endif;
