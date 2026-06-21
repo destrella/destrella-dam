@@ -432,7 +432,9 @@ elseif (array_key_exists('subject', $json)):
 		// Etiquetas de tracking que se limpian antes de escribir metadatos nuevos.
 		argumentoExifTool('IPTCDigest', ''),
 		argumentoExifTool('IPTC', ''),
-		argumentoExifTool('SpecialInstructions', '')
+		argumentoExifTool('SpecialInstructions', ''),
+		argumentoExifTool('Instructions', ''),
+		argumentoExifTool('LegacyIPTCDigest', '')
 	];
 
 	// OffsetTime
