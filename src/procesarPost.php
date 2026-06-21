@@ -250,7 +250,7 @@ if (array_key_exists('operacion_lote', $json)):
 	$rutasEntrada = is_array($json['rutas'] ?? null) ? $json['rutas'] : [];
 	$rutas = [];
 	foreach ($rutasEntrada as $rutaEntrada):
-		$ruta = resolverRutaProyecto($rutaEntrada, 'file', false);
+		$ruta = resolverRutaTolerante($rutaEntrada, 'file', false);
 		if ($ruta !== null):
 			$rutas[$ruta] = $ruta;
 		endif;
@@ -291,7 +291,11 @@ if (array_key_exists('operacion_lote', $json)):
 		elseif ($operacion === 'archivar'):
 			$resultadosOperacion[] = archivarArchivo($ruta, $configuracion);
 		else:
-			$resultadosOperacion[] = descartarArchivo($ruta);
+			$resultadoDescarte = descartarArchivo($ruta);
+			if ($resultadoDescarte['ok']):
+				agregarEtiquetasFinder($ruta, 'DAM PHP', 'Descartado');
+			endif;
+			$resultadosOperacion[] = $resultadoDescarte;
 		endif;
 	endforeach;
 
@@ -661,7 +665,7 @@ elseif (array_key_exists('listo', $json)):
 		endif;
 	endif;
 elseif (array_key_exists('borrar', $json)):
-	$rutaBorrar = resolverRutaProyecto($json['borrar'] ?? null, 'file', false);
+	$rutaBorrar = resolverRutaTolerante($json['borrar'] ?? null, 'file', false);
 	if ($rutaBorrar === null):
 		http_response_code(400);
 		echo 'Archivo a borrar inválido.';
@@ -670,6 +674,7 @@ elseif (array_key_exists('borrar', $json)):
 
 	$resultado = descartarArchivo($rutaBorrar);
 	if ($resultado['ok']):
+		agregarEtiquetasFinder($rutaBorrar, 'DAM PHP', 'Descartado');
 		registrarHeaderDirectorioEliminado($resultado);
 		echo "1\n.";
 	else:

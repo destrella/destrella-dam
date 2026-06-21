@@ -3920,21 +3920,39 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		endif;
 	endif;
 
-	if (is_numeric($crtmp)):
+	//if (is_numeric($crtmp)):
+	if (!empty($crtmp)):
+		if(!is_numeric($crtmp)):
+			$crtmp = '';
+		endif;
 		$copyrightdefault = '©' . $crtmp . ' ';
 		if(stripos(pathinfo($ruta)['filename'], ' a la(s) ') === FALSE):
+			//var_dump(pathinfo($ruta)['filename']);
 			$crntmp = explode(' ', pathinfo($ruta)['filename']);
-			unset($crntmp[0]);
+			if(is_numeric(substr($crntmp[0], 0, 4))):
+				unset($crntmp[0]);
+				$crntmp = array_values($crntmp);
+			endif;
+
 			if (!empty($crntmp)):
 				if (is_array($crntmp)):
 					foreach ($crntmp as $k => $v):
+						$v = explode('-keyframe', $v)[0];
+						$crntmp[$k] = $v;
 						if (
 							str_starts_with($v, 'IMG_')
 							|| str_starts_with($v, 'photo')
 						):
 							unset($crntmp[$k]);
 						endif;
-						if (str_ends_with($v, '_source')):
+						if (
+							str_ends_with($v, '_source')
+							|| str_ends_with($v, '_n')
+						):
+							unset($crntmp[$k]);
+						endif;
+						if (strpos($v, '-') !== FALSE
+						|| preg_match('/^(\d+)[xX](\d+)_/', $v)):
 							unset($crntmp[$k]);
 						endif;
 						if (str_ends_with($v, ')')):
@@ -3944,7 +3962,6 @@ function crearBloque($ruta, $id, $tipo = 'img')
 					endforeach;
 				endif;
 				$nombreabuscar = implode(' ', $crntmp);
-				$nombreabuscar = explode('-keyframe', $nombreabuscar)[0];
 				$nombresSugeridos = obtenerNombresPorUsuario($nombreabuscar);
 				if (!empty($nombresSugeridos)):
 					$copyrightdefault .= implode(' ', $nombresSugeridos);
@@ -3968,7 +3985,11 @@ function crearBloque($ruta, $id, $tipo = 'img')
 					endif;
 				endif;
 			endif;
+		else:
+			//var_dump(pathinfo($ruta)['filename']);
 		endif;
+	else:
+		var_dump('$crtmp='.$crtmp);
 	endif;
 
 	if (!$subject):
