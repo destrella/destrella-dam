@@ -89,7 +89,7 @@ if ($video !== null && $_SERVER['REQUEST_METHOD'] === 'POST'):
 		$resultado = extraerFrameSeleccionadoVideo($video, $rutaPreview, $modo, $indice, 'jpg', $keyframes);
 		$logs[] = $resultado;
 		if ($resultado['ok']):
-			$previewRelativa = rutaRelativaProyecto($rutaPreview) . '?v=' . filemtime($rutaPreview);
+			$previewRelativa = urlVisualizacion($rutaPreview) . '?v=' . filemtime($rutaPreview);
 			$mensaje = 'Preview actualizado.';
 		else:
 			$error = 'No se pudo generar el preview.';
@@ -103,7 +103,10 @@ if ($video !== null && $_SERVER['REQUEST_METHOD'] === 'POST'):
 			$logs[] = $metadatos;
 			actualizarIndicePalabrasClave([[$rutaImagen, 'img']], 0, true);
 			limpiarPalabrasClaveSinUso();
-			$imagenFinalRelativa = rutaRelativaProyecto($rutaImagen) . '?v=' . filemtime($rutaImagen);
+			// Etiqueta Finder tanto al video como a la imagen extraída
+			agregarEtiquetasFinder($video, 'DAM PHP');
+			agregarEtiquetasFinder($rutaImagen, 'DAM PHP', 'Imagen extraída de video');
+			$imagenFinalRelativa = urlVisualizacion($rutaImagen) . '?v=' . filemtime($rutaImagen);
 			$mensaje = $metadatos['ok']
 				? 'Imagen extraída con metadatos heredados.'
 				: 'Imagen extraída, pero ExifTool reportó una advertencia al copiar metadatos.';
@@ -113,7 +116,9 @@ if ($video !== null && $_SERVER['REQUEST_METHOD'] === 'POST'):
 	endif;
 endif;
 
-$videoRelativo = $video !== null ? rutaRelativaProyecto($video) : '';
+// Usar la ruta real (absoluta para archivos fuera del proyecto) en el
+// formulario para que resolverVideoExtraccion() pueda resolverla.
+$videoRelativo = $video !== null ? $video : '';
 $indiceMaxActual = match ($modo) {
 	'timestamp' => $indiceMaxTimestampUI,
 	'frame' => $indiceMaxFrame,

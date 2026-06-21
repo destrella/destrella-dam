@@ -14,12 +14,12 @@ function resolverDirectorioVista(?string $ruta, ?string $archivo = null): ?strin
 	if ($entrada === ''):
 		$entrada = trim((string) ($archivo ?? ''));
 	endif;
-	return resolverRutaProyecto($entrada, 'dir', true);
+	return resolverRutaTolerante($entrada, 'dir', true);
 }
 
 function resolverArchivoLocalAbrible(?string $ruta): ?string
 {
-	return resolverRutaProyecto($ruta, 'file', false);
+	return resolverRutaTolerante($ruta, 'file', false);
 }
 
 function rutaDestinoDisponible(string $directorio, string $nombreArchivo): string
@@ -107,8 +107,17 @@ function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, 
 	endif;
 
 	$rutaDestino = rutaDestinoDisponible($destinoReal, basename($rutaOrigen));
-	if (!rename($rutaOrigen, $rutaDestino)):
-		return resultadoOperacionArchivo(false, $rutaOrigen, $rutaDestino, 'No se pudo mover el archivo.', $directorioOrigen);
+
+	// Intentar rename primero (mismo sistema de archivos).
+	// Si falla, copiar + borrar (sistemas de archivos distintos).
+	if (!@rename($rutaOrigen, $rutaDestino)):
+		if (!copy($rutaOrigen, $rutaDestino)):
+			return resultadoOperacionArchivo(false, $rutaOrigen, $rutaDestino, 'No se pudo mover el archivo (rename ni copy funcionaron).', $directorioOrigen);
+		endif;
+		if (!@unlink($rutaOrigen)):
+			@unlink($rutaDestino);
+			return resultadoOperacionArchivo(false, $rutaOrigen, $rutaDestino, 'Se copió el archivo pero no se pudo eliminar el original.', $directorioOrigen);
+		endif;
 	endif;
 
 	if ($mantenerEnIndice):
@@ -129,8 +138,12 @@ function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, 
 		limpiarPalabrasClaveSinUso();
 	endif;
 
-	$directoriosLimpieza = candidatosDirectoriosLimpieza($directorioOrigen, proyectoRaiz());
-	limpiarDirectoriosVacios($directorioOrigen, proyectoRaiz());
+	// Limpiar directorios vacíos. Si el origen está dentro del proyecto,
+	// usar la raíz del proyecto como barrera; si está fuera, no limpiar.
+	$origenEnProyecto = rutaDentroDeDirectorio($rutaOrigen, proyectoRaiz());
+	$rootLimpieza = $origenEnProyecto ? proyectoRaiz() : dirname($rutaOrigen);
+	$directoriosLimpieza = candidatosDirectoriosLimpieza($directorioOrigen, $rootLimpieza);
+	limpiarDirectoriosVacios($directorioOrigen, $rootLimpieza);
 	$directoriosEliminados = array_values(array_filter(
 		$directoriosLimpieza,
 		static fn($directorio) => !is_dir($directorio)
@@ -356,7 +369,7 @@ if (array_key_exists('relleno_pagina', $json)):
 
 	echo crearBloque($resultados[$indice][0], $id, $resultados[$indice][1]);
 elseif (array_key_exists('estado_metadatos', $json)):
-	$ruta = resolverRutaProyecto($json['ruta'] ?? null, 'file', false);
+	$ruta = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
 	$id = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($json['id'] ?? ''));
 	$media = ($json['media'] ?? '') === 'vid' ? 'vid' : 'img';
 
@@ -368,7 +381,7 @@ elseif (array_key_exists('estado_metadatos', $json)):
 
 	echo crearBloque($ruta, $id, $media);
 elseif (array_key_exists('corregir_region', $json)):
-	$ruta = resolverRutaProyecto($json['ruta'] ?? null, 'file', false);
+	$ruta = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
 	$eje = (string) ($json['corregir_region'] ?? '');
 	if ($ruta === null):
 		http_response_code(400);
@@ -405,8 +418,35 @@ elseif (array_key_exists('abrir_archivo', $json)):
 			: 'Error: open terminó con código ' . (int) $codigo) .
 		(!empty($salida) ? '<br>' . implode('<br>', array_map('formatearRespuesta', $salida)) : '') .
 		'</code>';
+elseif (array_key_exists('abrir_carpeta', $json)):
+	$rutaCarpeta = resolverArchivoLocalAbrible($json['abrir_carpeta'] ?? null);
+	if ($rutaCarpeta === null):
+		http_response_code(400);
+		echo '<code>Error: No se puede abrir la ruta solicitada.</code>';
+		exit;
+	endif;
+
+	$directorioPadre = dirname($rutaCarpeta);
+	if (!is_dir($directorioPadre)):
+		http_response_code(400);
+		echo '<code>Error: La carpeta contenedora no existe.</code>';
+		exit;
+	endif;
+
+	$open = is_executable('/usr/bin/open') ? '/usr/bin/open' : 'open';
+	$comando = $open . ' ' . escapeshellarg($directorioPadre);
+	$salida = [];
+	exec($comando . ' 2>&1', $salida, $codigo);
+	echo '<code>' .
+		htmlspecialchars($comando, ENT_QUOTES, 'UTF-8') .
+		'<br>' .
+		($codigo === 0
+			? 'Carpeta abierta con open.'
+			: 'Error: open terminó con código ' . (int) $codigo) .
+		(!empty($salida) ? '<br>' . implode('<br>', array_map('formatearRespuesta', $salida)) : '') .
+		'</code>';
 elseif (array_key_exists('subject', $json)):
-	$rutaMetadatos = resolverRutaProyecto($json['ruta'] ?? null, 'file', false);
+	$rutaMetadatos = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
 	if ($rutaMetadatos === null):
 		http_response_code(400);
 		echo '<code>Error: ruta de metadatos inválida.</code>';
@@ -589,6 +629,8 @@ elseif (array_key_exists('subject', $json)):
 	if (is_file($rutaMetadatos)):
 		actualizarIndicePalabrasClave([[$rutaMetadatos, $mediaMetadatos]], 0, true);
 		limpiarPalabrasClaveSinUso();
+		// Etiqueta Finder
+		agregarEtiquetasFinder($rutaMetadatos, 'DAM PHP', 'Metadatos guardados');
 	endif;
 	if (!empty($salida)):
 		$salida = array_map('formatearRespuesta', $salida);
@@ -600,7 +642,7 @@ elseif (array_key_exists('subject', $json)):
 		implode('<br>', $salida) . '</code>';
 elseif (array_key_exists('listo', $json)):
 	$configuracion = cargarConfiguracion();
-	$rutaOrigen = resolverRutaProyecto($json['listo'] ?? null, 'file', false);
+	$rutaOrigen = resolverRutaTolerante($json['listo'] ?? null, 'file', false);
 	if ($rutaOrigen === null):
 		http_response_code(400);
 		echo 'Archivo a mover inválido.';
@@ -638,10 +680,10 @@ elseif (array_key_exists('borrar', $json)):
 		endif;
 	endif;
 elseif (array_key_exists('extraer', $json)):
-	$rutaExtraer = resolverRutaProyecto($json['extraer'] ?? null, 'file', false);
+	$rutaExtraer = resolverRutaTolerante($json['extraer'] ?? null, 'file', false);
 	echo $rutaExtraer !== null ? extraerIFrame($rutaExtraer) : 'No se encontró un archivo válido para extraer.';
 elseif (array_key_exists('convertir', $json)):
-	$rutaConvertir = resolverRutaProyecto($json['convertir'] ?? null, 'file', false);
+	$rutaConvertir = resolverRutaTolerante($json['convertir'] ?? null, 'file', false);
 	echo $rutaConvertir !== null ? convertirWebP($rutaConvertir) : 'No se encontró un archivo válido para convertir.';
 endif;
 exit;

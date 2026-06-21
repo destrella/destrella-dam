@@ -14,50 +14,71 @@ $omitir = carpetasIgnoradasConfiguracion($configuracion);
 
 $html = '';
 
+$raizNavegacion = obtenerRaizNavegacion();
 $unarchivo = ($_GET['archivo'] ?? NULL);
 $rutaIterador = CARPETA;
 $archivoval = '';
-$rutaBase = __DIR__ . DIRECTORY_SEPARATOR;
+$rutaBase = $raizNavegacion . DIRECTORY_SEPARATOR;
 $palabraClaveActiva = obtenerPalabraClaveActiva();
 $mediaActual = isset($_GET['media']) && in_array($_GET['media'], ['fotos', 'videos'], true)
 	? $_GET['media']
 	: '';
 if ($unarchivo):
-	$rutaSolicitada = resolverRutaProyecto($unarchivo, 'any', false);
+	// Intentar resolver contra la raíz de navegación (home),
+	// con caída a la raíz del proyecto si la ruta no está en home.
+	$rutaSolicitada = resolverRutaNavegacion($unarchivo, 'any', false);
 	if ($rutaSolicitada !== null && is_dir($rutaSolicitada)):
 		$rutaIterador = $rutaSolicitada;
-		$archivoval = ' value="' . escaparHtml(rutaRelativaDesdeProyecto($rutaSolicitada)) . '"';
+		$archivoval = ' value="' . escaparHtml(rutaRelativaDesdeRaizNavegacion($rutaSolicitada)) . '"';
 		$unarchivo = NULL;
 	elseif ($rutaSolicitada !== null && is_file($rutaSolicitada)):
 		$unarchivo = $rutaSolicitada;
-		$archivoval = ' value="' . escaparHtml(rutaRelativaDesdeProyecto($rutaSolicitada)) . '"';
+		$archivoval = ' value="' . escaparHtml(rutaRelativaDesdeRaizNavegacion($rutaSolicitada)) . '"';
 	else:
 		$unarchivo = NULL;
-		$archivoval = ' value="' . escaparHtml(rutaRelativaDesdeProyecto(CARPETA)) . '"';
+		$archivoval = ' value="' . escaparHtml(rutaRelativaDesdeRaizNavegacion(CARPETA)) . '"';
 	endif;
-elseif (CARPETA == __DIR__):
+elseif ($rutaIterador === $raizNavegacion || CARPETA == __DIR__):
 	$archivoval = ' ';
 else:
-	$elvalordearchivo = str_ireplace(__DIR__, '', CARPETA);
+	$elvalordearchivo = str_ireplace($raizNavegacion, '', $rutaIterador);
+	if (empty($elvalordearchivo) || $elvalordearchivo === $rutaIterador):
+		$elvalordearchivo = str_ireplace(__DIR__, '', $rutaIterador);
+	endif;
 	if (!empty($elvalordearchivo)):
 		$elvalordearchivo = trim($elvalordearchivo, '/');
 	endif;
 	$archivoval = ' value="' . escaparHtml($elvalordearchivo) . '"';
 endif;
 
+$errorDirectorio = '';
 if ($palabraClaveActiva !== ''):
 	$resultados = obtenerResultadosPorPalabraClave($palabraClaveActiva, $mediaActual);
 else:
-	$resultadosRuta = obtenerResultadosMultimedia($rutaIterador, $unarchivo, $omitir);
-	actualizarIndicePalabrasClave($resultadosRuta, 250);
-	$resultados = $resultadosRuta;
+	// Verificar que el directorio sea legible antes de escanear.
+	// macOS restringe el acceso a ciertas carpetas (Downloads, etc.).
+	if (!is_dir($rutaIterador)):
+		$errorDirectorio = 'La ruta no existe o no es un directorio: ' . escaparHtml($rutaIterador);
+		$resultados = [];
+	elseif (!is_readable($rutaIterador)):
+		$errorDirectorio = 'La carpeta no es accesible: ' . escaparHtml($rutaIterador) .
+			'. macOS puede estar bloqueando el acceso. Revisa los permisos en Preferencias del Sistema ' .
+			'→ Privacidad y Seguridad → Archivos y Carpetas.';
+		$resultados = [];
+	else:
+		$resultadosRuta = obtenerResultadosMultimedia($rutaIterador, $unarchivo, $omitir);
+		actualizarIndicePalabrasClave($resultadosRuta, 250);
+		$resultados = $resultadosRuta;
+	endif;
 endif;
 $filtrosMetadatos = obtenerFiltrosMetadatosDesdeFuente();
 $totalSinFiltros = count($resultados);
 $resultados = filtrarResultadosPorMetadatos($resultados, $filtrosMetadatos);
 $palabrasClaveIndexadas = obtenerPalabrasClaveIndexadas();
 
-$carpetas = listarCarpetas(__DIR__, $omitir);
+// Listar carpetas desde la raíz de navegación (home del usuario)
+// para que el árbol de directorios comience desde ~/
+$carpetas = listarCarpetas($raizNavegacion, $omitir);
 $carpetas = array_map(function ($carpeta) use ($rutaBase) {
 	return str_replace($rutaBase, "", $carpeta);
 }, $carpetas);
@@ -198,7 +219,11 @@ $listaPalabrasClave = renderizarListaPalabrasClave(
 		'<section class="col-contenido">' .
 		paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador, 'condensado') .
 		formularioFiltrosMetadatos($filtrosMetadatos, $total_de_elementos, $totalSinFiltros, $rutaIterador, $elementos_por_pagina) .
-		'<main>' . $html . '</main>' .
+		'<main>' .
+		($errorDirectorio !== ''
+			? '<div class="error-directorio" role="alert"><p>⚠️ ' . $errorDirectorio . '</p></div>'
+			: '') .
+		$html . '</main>' .
 		paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador) .
 		((isset($_GET['debug']) && $_GET['debug'] === '1') ? '<details class="resultados-debug"><summary>Resultados</summary>' . var_dump_pre($resultados) . '</details>' : '') .
 		'</section>' .

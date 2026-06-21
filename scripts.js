@@ -424,6 +424,47 @@ function abrirArchivo(id){
 	}
 }
 
+/**
+ * Abre la carpeta contenedora del archivo en el Finder.
+ * Lee la ruta desde el input .ruta_local del panel y envía
+ * la acción 'abrir_carpeta' al servidor.
+ */
+function abrirCarpeta(id){
+	const panel = document.getElementById('pie_'+id);
+	const respuesta = document.getElementById('respuesta_'+id);
+	const boton = document.getElementById('abrir_carpeta_'+id);
+	const ruta = panel?.querySelector('.ruta_local')?.value || '';
+	if (!ruta || !respuesta) return;
+
+	if (boton) {
+		boton.disabled = true;
+		boton.setAttribute('aria-busy', 'true');
+	}
+	respuesta.innerHTML = '<code>Abriendo carpeta...</code>';
+
+	const xhr = new XMLHttpRequest();
+	xhr.open('POST', 'index.php', true);
+	xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+	xhr.onreadystatechange = function(){
+		if (xhr.readyState === 4){
+			respuesta.innerHTML = xhr.responseText || '<code>Sin respuesta de open.</code>';
+			if (boton) {
+				boton.disabled = false;
+				boton.removeAttribute('aria-busy');
+			}
+		}
+	};
+	try {
+		xhr.send(JSON.stringify({abrir_carpeta: ruta}));
+	} catch (error) {
+		if (boton) {
+			boton.disabled = false;
+			boton.removeAttribute('aria-busy');
+		}
+		throw error;
+	}
+}
+
 function guardar(id){
 	const xhr = new XMLHttpRequest();
 	const respuesta = document.getElementById('respuesta_'+id);

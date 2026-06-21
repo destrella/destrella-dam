@@ -22,7 +22,14 @@ function normalizarCarpetasIgnoradas(mixed $valor): array
 	$salida = [];
 	$vistos = [];
 	foreach (($valores ?: []) as $carpeta):
-		$carpeta = trim(str_replace('\\', '/', (string) $carpeta), "/ \t\n\r\0\x0B");
+		$carpeta = str_replace('\\', '/', (string) $carpeta);
+		// Si es una ruta absoluta (empieza con /), solo limpiar espacios y
+		// barra final, pero preservar la barra inicial.
+		if (str_starts_with($carpeta, '/')):
+			$carpeta = rtrim($carpeta, "/ \t\n\r\0\x0B");
+		else:
+			$carpeta = trim($carpeta, "/ \t\n\r\0\x0B");
+		endif;
 		if ($carpeta === ''):
 			continue;
 		endif;

@@ -5,8 +5,9 @@ define('ESTE', $_SERVER['SCRIPT_NAME']);
 require_once('src/funciones.php');
 
 // API METADATA LECTURA SEGURA (Alternativa para WebP)
+// Usa resolverRutaTolerante para soportar archivos fuera del proyecto.
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['ajax_meta'])):
-	$ruta = resolverRutaProyecto($_GET['ajax_meta'] ?? null, 'file', false);
+	$ruta = resolverRutaTolerante($_GET['ajax_meta'] ?? null, 'file', false);
 	if ($ruta !== null):
 		$meta = obtenerMetadatos($ruta);
 		$res = $meta['resultado'] ?? [];
@@ -67,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 		http_response_code(400);
 		die('<div class="response-message response-error">Solicitud inválida.</div>');
 	endif;
-	$archivoRegion = resolverRutaProyecto($json['archivo'] ?? null, 'file', false);
+	$archivoRegion = resolverRutaTolerante($json['archivo'] ?? null, 'file', false);
 	if ($archivoRegion === null):
 		http_response_code(400);
 		die('<div class="response-message response-error">Archivo inválido.</div>');
@@ -159,14 +160,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 	var_dump_pre($comando, '$comando', FALSE);
 	$respuesta = exec($comando, $salida);
 	$salida = array_map('formatearRespuesta', $salida);
+	// Etiqueta Finder después de guardar regiones
+	if (is_file($archivoRegion)):
+		agregarEtiquetasFinder($archivoRegion, 'DAM PHP', 'Regiones guardadas');
+	endif;
 	//$salida = ['LOLO'];
 	die('<div class="comando">' . escaparHtml($comando) . '</div>' . implode('<br>', $salida));
 endif;
 
-$archivo = ($_GET['foto'] ?? FALSE);
-$archivo = $archivo ? rutaRelativaDesdeProyecto(resolverRutaProyecto($archivo, 'file', false) ?? '') : FALSE;
+// Resolver la ruta con tolerancia (proyecto o home).
+// Necesitamos dos representaciones:
+//   $rutaReal   → ruta absoluta real (para POST, data-file, info)
+//   $archivoUrl → URL de visualización (para <img src>, acepta servir.php)
+$rutaReal = ($_GET['foto'] ?? FALSE);
+$rutaReal = $rutaReal
+	? resolverRutaTolerante($rutaReal, 'file', false)
+	: FALSE;
+$archivoUrl = $rutaReal ? urlVisualizacion($rutaReal) : FALSE;
 
-if (!$archivo):
+if (!$rutaReal):
 	//OBTENER LAS IMÁGENES DE LA CARPETA
 	$imgs = [];
 	$iterador = new SortedIterator(new RecursiveIteratorIterator(new RecursiveDirectoryIterator(CARPETA)));
@@ -182,9 +194,13 @@ if (!$archivo):
 			endswitch;
 		endif;
 	endforeach;
-	$imgs = '"' . implode('","', $imgs) . '"';
+	$imgsPaths = $imgs;
+	$imgsUrls = array_map('urlVisualizacion', $imgsPaths);
+	$imgs = '"' . implode('","', $imgsUrls) . '"';
+	$imgsDataPaths = '"' . implode('","', $imgsPaths) . '"';
 else:
-	$imgs = '"' . $archivo . '"';
+	$imgs = '"' . $archivoUrl . '"';
+	$imgsDataPaths = '"' . $rutaReal . '"';
 endif;
 
 ?><!DOCTYPE html>
@@ -490,8 +506,8 @@ endif;
 	<h1 class="encabezado-caras">Etiquetar caras</h1>
 	<?php
 	$archivoval = '';
-	if ($archivo):
-		$archivoval = ' value="' . $archivo . '"';
+	if ($rutaReal):
+		$archivoval = ' value="' . $rutaReal . '"';
 	endif;
 	$volver = '<a href="/" class="volver-link" title="Volver">⬅️</a> ';
 	if (
@@ -505,7 +521,10 @@ endif;
 	<div id="canvas-container"></div>
 	<script>
 		// Lista de imágenes en la carpeta "caras"
+		// imageFiles – URLs de visualización (para <img src>)
+		// imageDataPaths – rutas reales del sistema (para POST, data-file, info)
 		const imageFiles = [<?php echo $imgs; ?>];
+		const imageDataPaths = [<?php echo $imgsDataPaths; ?>];
 		const canvasContainer = document.getElementById('canvas-container');
 
 		async function initializeGallery() {
@@ -515,11 +534,13 @@ endif;
 		}
 
 		async function createImageCanvas(imageFile, index) {
+			// Ruta real del sistema para el archivo actual
+			const imagePath = imageDataPaths[index] || imageFile;
 			const imageContainer = document.createElement('div');
 			imageContainer.className = 'image-container';
 
 			const canvas = document.createElement('canvas');
-			canvas.dataset.file = escape(imageFile);
+			canvas.dataset.file = escape(imagePath);
 			const ctx = canvas.getContext('2d');
 			const infoDiv = document.createElement('div');
 			infoDiv.className = 'info';
@@ -541,17 +562,17 @@ endif;
 			// Configurar canvas inicial
 			const rectangles = [];
 			updateCanvasSize(canvas, ctx, img, rectangles, 500);
-			if (esImagenSoportada(imageFile)) {
-				await obtenerRectangulos(imageFile, rectangles, canvas, img);
+			if (esImagenSoportada(imagePath)) {
+				await obtenerRectangulos(imagePath, rectangles, canvas, img);
 			};
 
 			// Configurar eventos
-			setupCanvasEvents(canvas, ctx, img, rectangles, infoDiv, imageFile);
-			setupControlEvents(canvas, ctx, img, rectangles, infoDiv, sizeSelector, clearButton, sendButton, imageFile);
+			setupCanvasEvents(canvas, ctx, img, rectangles, infoDiv, imageFile, imagePath);
+			setupControlEvents(canvas, ctx, img, rectangles, infoDiv, sizeSelector, clearButton, sendButton, imageFile, imagePath);
 
 			// Dibujar canvas
 			redrawCanvas(canvas, ctx, img, rectangles);
-			showInfo(infoDiv, img, imageFile, rectangles, ctx, canvas);
+			showInfo(infoDiv, img, imagePath, rectangles, ctx, canvas);
 
 			// Agregar elementos al DOM
 			imageContainer.appendChild(sizeSelector);
@@ -591,7 +612,7 @@ endif;
 			return getComputedStyle(document.documentElement).getPropertyValue(nombre).trim() || respaldo;
 		}
 
-		function setupCanvasEvents(canvas, ctx, img, rectangles, infoDiv, imageFile) {
+		function setupCanvasEvents(canvas, ctx, img, rectangles, infoDiv, imageFile, imagePath) {
 			let isDrawing = false;
 			let startX, startY;
 
@@ -632,31 +653,33 @@ endif;
 
 				isDrawing = false;
 				redrawCanvas(canvas, ctx, img, rectangles);
-				showInfo(infoDiv, img, imageFile, rectangles, ctx, canvas);
+				showInfo(infoDiv, img, imagePath, rectangles, ctx, canvas);
 			});
 		}
 
-		function setupControlEvents(canvas, ctx, img, rectangles, infoDiv, sizeSelector, clearButton, sendButton, imageFile) {
+		function setupControlEvents(canvas, ctx, img, rectangles, infoDiv, sizeSelector, clearButton, sendButton, imageFile, imagePath) {
 			sizeSelector.addEventListener('change', () => {
 				const selectedSize = parseInt(sizeSelector.value);
 				updateCanvasSize(canvas, ctx, img, rectangles, selectedSize);
-				showInfo(infoDiv, img, imageFile, rectangles, ctx, canvas);
+				showInfo(infoDiv, img, imagePath, rectangles, ctx, canvas);
 			});
 
 			clearButton.addEventListener('click', () => {
 				rectangles.length = 0;
 				redrawCanvas(canvas, ctx, img, rectangles);
-				showInfo(infoDiv, img, imageFile, rectangles, ctx, canvas);
+				showInfo(infoDiv, img, imagePath, rectangles, ctx, canvas);
 			});
 
 			sendButton.addEventListener('click', () => {
-				sendData(imageFile, img, rectangles, infoDiv);
+				sendData(imageFile, imagePath, img, rectangles, infoDiv);
 			});
 		}
 
 		async function obtenerRectangulos(imageFile, rectangles, canvas, img) {
+			// Usar la ruta real (imagePath) para la petición AJAX de metadatos
+			const metaPath = imageDataPaths[imageFiles.indexOf(imageFile)] || imageFile;
 			try {
-				const response = await fetch(`caras.php?ajax_meta=${encodeURIComponent(imageFile)}`);
+				const response = await fetch(`caras.php?ajax_meta=${encodeURIComponent(metaPath)}`);
 				if (!response.ok) return;
 				const metadata = await response.json();
 
@@ -908,8 +931,8 @@ endif;
 				input.focus({ focusVisible: true });
 			});
 		}
-		function sendData(imageFile, img, rectangles, infoDiv) {
-			const canvas = document.querySelector(`canvas[data-file="${escape(imageFile)}"]`);
+		function sendData(imageFile, imagePath, img, rectangles, infoDiv) {
+			const canvas = document.querySelector(`canvas[data-file="${escape(imagePath)}"]`);
 			const orientation = parseInt(canvas.dataset.orientation || 1);
 
 			let rawWidth = img.naturalWidth;
@@ -920,7 +943,7 @@ endif;
 			}
 
 			const data = {
-				archivo: imageFile,
+				archivo: imagePath,
 				ancho: rawWidth,
 				alto: rawHeight,
 				areas: rectangles.map(rect => {

@@ -2349,3 +2349,27 @@ button.abrir-lightbox:active {
 		right: 0.5rem;
 	}
 }
+
+/* ═══════════════════════════════════════
+   Mensaje de error cuando un directorio
+   no es accesible (permisos macOS TCC)
+   ═══════════════════════════════════════ */
+.error-directorio {
+	margin: 2rem 1rem;
+	padding: 1.5rem;
+	border: 2px solid var(--outline-danger, #d93025);
+	border-radius: 0.5rem;
+	background: color-mix(in srgb, var(--bg-body, #fff) 92%, var(--outline-danger, #d93025));
+	color: var(--text-body, inherit);
+	font-size: 0.95rem;
+	line-height: 1.5;
+}
+
+.error-directorio p {
+	margin: 0;
+}
+
+.error-directorio .error-accion {
+	margin-top: 0.75rem;
+	font-size: 0.85rem;
+}

@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 		exit;
 	endif;
 
-	$ruta = resolverRutaProyecto($json['archivo'] ?? null, 'file', false);
+	$ruta = resolverRutaTolerante($json['archivo'] ?? null, 'file', false);
 	if ($ruta === null):
 		http_response_code(400);
 		header('Content-Type: application/json; charset=UTF-8');
@@ -46,10 +46,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 	endif;
 
 	$resultado = recortarImagenConRegiones($ruta, $json);
-	if (!$resultado['ok']):
+	if ($resultado['ok']):
+		agregarEtiquetasFinder($ruta, 'DAM PHP', 'Imagen recortada');
+	else:
 		http_response_code(400);
 	endif;
-	$resultado['archivo'] = rutaRelativaDesdeProyecto($ruta);
+	$resultado['archivo'] = rutaRelativaParaParametro($ruta);
 	$resultado['version'] = firmaCacheArchivo($ruta);
 	header('Content-Type: application/json; charset=UTF-8');
 	echo json_encode($resultado, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -58,9 +60,12 @@ endif;
 
 $configuracion = cargarConfiguracion();
 $archivo = $_GET['foto'] ?? $_GET['archivo'] ?? '';
-$ruta = resolverRutaProyecto($archivo, 'file', false);
-$archivoRelativo = $ruta ? rutaRelativaDesdeProyecto($ruta) : '';
-$srcImagen = $archivoRelativo;
+$ruta = resolverRutaTolerante($archivo, 'file', false);
+// $srcImagen → para <img src> (usa urlVisualizacion, acepta servir.php)
+// $rutaPost  → para atributos data, input, y POST (ruta real del sistema)
+$srcImagen = $ruta ? urlVisualizacion($ruta) : '';
+$rutaPost = $ruta ?: '';
+$archivoRelativo = $rutaPost;
 $dimensiones = [0, 0];
 $firmaImagen = '';
 $regionesTotal = 0;
@@ -69,9 +74,9 @@ $mensaje = '';
 if ($ruta):
 	$extension = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
 	if (in_array($extension, ['heic', 'heif', 'avif', 'tif', 'tiff'], true)):
-		$srcTemporal = generarJPGtemporal($archivoRelativo);
+		$srcTemporal = generarJPGtemporal($ruta);
 		if ($srcTemporal !== ''):
-			$srcImagen = $srcTemporal;
+			$srcImagen = urlVisualizacion(proyectoRaiz() . DIRECTORY_SEPARATOR . $srcTemporal);
 		endif;
 	endif;
 	$dimensiones = getimagesize($ruta) ?: [0, 0];

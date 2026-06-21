@@ -34,10 +34,20 @@ endif;
  * @return string Ruta absoluta de la raíz o la subruta válida dentro de la raíz.
  *
  * @note Usa el superglobal $_GET['ruta'] para determinar la subruta.
+ *       Primero intenta resolver contra la raíz de navegación (home),
+ *       luego contra la raíz del proyecto como fallback.
  */
 function definirRaíz(): string
 {
-	return resolverRutaProyecto($_GET['ruta'] ?? '', 'dir', true) ?? proyectoRaiz();
+	$rutaParam = $_GET['ruta'] ?? '';
+	if ($rutaParam !== ''):
+		$resuelta = resolverRutaNavegacion($rutaParam, 'dir', false);
+		if ($resuelta !== null):
+			return $resuelta;
+		endif;
+	endif;
+
+	return resolverRutaProyecto($rutaParam, 'dir', true) ?? proyectoRaiz();
 }
 
 /**
@@ -1760,6 +1770,9 @@ function extraerIFrame(string $rutaVideo): string
 	if ($returnVarExiftool !== 0):
 		return "{$final}<br>[{$returnVarExiftool}]<br>" . implode("<br>", $salidaE);
 	endif;
+	// Etiqueta Finder tanto al video original como a la imagen extraída
+	agregarEtiquetasFinder($rutaVideo, 'DAM PHP');
+	agregarEtiquetasFinder($rutaImagen, 'DAM PHP', 'Imagen extraída de video');
 	$final .= '<br>' . formatearRespuesta('2. Metadatos copiados con éxito.');
 
 	return $final;
@@ -1767,7 +1780,8 @@ function extraerIFrame(string $rutaVideo): string
 
 function resolverVideoExtraccion(?string $rutaVideo): ?string
 {
-	$real = resolverRutaProyecto($rutaVideo, 'file', false);
+	// Usar resolverRutaTolerante para soportar videos fuera del proyecto.
+	$real = resolverRutaTolerante($rutaVideo, 'file', false);
 	if (!$real):
 		return null;
 	endif;
@@ -2152,6 +2166,10 @@ function convertirWebP(string $rutaImagen): string
 		return "[{$returnVarExiftool}]<br>" . implode("<br>", $salidaE);
 	endif;
 
+	// Etiqueta Finder tanto al original como al WebP
+	agregarEtiquetasFinder($rutaImagen, 'DAM PHP');
+	agregarEtiquetasFinder($rutaWebP, 'DAM PHP', 'Convertido a WebP');
+
 	return formatearRespuesta('1. Imagen convertida con éxito: ' . $rutaWebP);
 }
 
@@ -2349,6 +2367,30 @@ function obtenerTamanioArchivo(string $rutaArchivo): string
  * @param string|int $id ID numérico o identificador único para el DOM.
  * @return string|false HTML estructurado o FALSE en error.
  */
+/**
+ * Obtiene una URL navegable por el navegador para un archivo multimedia.
+ *
+ * Si el archivo está dentro de la raíz del proyecto, devuelve una ruta
+ * relativa (para servirla directamente). Si está fuera (p.ej. en ~/),
+ * devuelve una URL a servir.php que PHP leerá y servirá.
+ *
+ * @param string $rutaAbsoluta Ruta absoluta del archivo multimedia.
+ * @return string URL para usar en los atributos src/href.
+ */
+function urlVisualizacion(string $rutaAbsoluta): string
+{
+	$ruta  = str_replace('\\', '/', $rutaAbsoluta);
+	$pRaiz = str_replace('\\', '/', proyectoRaiz());
+
+	// Dentro del proyecto → ruta relativa (se sirve directamente)
+	if (str_starts_with($ruta, $pRaiz . '/')):
+		return substr($ruta, strlen($pRaiz) + 1);
+	endif;
+
+	// Fuera del proyecto → proxy PHP
+	return 'servir.php?f=' . rawurlencode($rutaAbsoluta);
+}
+
 function mostrarVideo($ruta, $id)
 {
 	if (empty($ruta) || !is_file($ruta)):
@@ -2375,20 +2417,30 @@ function mostrarVideo($ruta, $id)
 		endif;
 	endif;
 
-	$ruta = str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $ruta);
-	$rutaVersionada = agregarCacheBuster($ruta, firmaCacheArchivo($rutaAbsoluta));
-	$poster = generarJPGtemporal($ruta);
+	// Calcular la URL de visualización según la ubicación del archivo
+	$rutaWeb = urlVisualizacion($ruta);
+	$rutaVersionada = agregarCacheBuster($rutaWeb, firmaCacheArchivo($rutaAbsoluta));
+	$poster = generarJPGtemporal($rutaAbsoluta);
 	$posterAttr = '';
 	if (!empty($poster)):
-		$rutaPosterAbsoluta = dirname(__DIR__) . DIRECTORY_SEPARATOR . $poster;
-		$posterAttr = ' poster="' . htmlspecialchars(agregarCacheBuster($poster, firmaCacheArchivo($rutaPosterAbsoluta)), ENT_QUOTES, 'UTF-8') . '"';
+		$rutaPosterAbsoluta = proyectoRaiz() . DIRECTORY_SEPARATOR . $poster;
+		if (is_file($rutaPosterAbsoluta)):
+			$posterAttr = ' poster="' . htmlspecialchars(agregarCacheBuster($poster, firmaCacheArchivo($rutaPosterAbsoluta)), ENT_QUOTES, 'UTF-8') . '"';
+		endif;
+	endif;
+	// data-ruta debe contener una ruta real (no servir.php?f=...) para que
+	// procesarPost.php pueda resolverla al guardar metadatos. Para archivos
+	// dentro del proyecto se usa la ruta relativa; fuera del proyecto la absoluta.
+	$rutaPost = urlVisualizacion($rutaAbsoluta);
+	if (str_starts_with($rutaPost, 'servir.php')):
+		$rutaPost = $rutaAbsoluta;
 	endif;
 	$html .=
 		'<figure>' .
 			'<video' .
 			' id="img_' . $id . '"' .
 			' src="' . htmlspecialchars($rutaVersionada, ENT_QUOTES, 'UTF-8') . '"' .
-			' data-ruta="' . $ruta . '"' .
+			' data-ruta="' . htmlspecialchars($rutaPost, ENT_QUOTES, 'UTF-8') . '"' .
 			' data-tipo="vid"' .
 			//' loop'.
 			' preload="metadata"' .
@@ -2396,7 +2448,9 @@ function mostrarVideo($ruta, $id)
 		' controls' .
 		'></video>' .
 		mostrarBotonLightbox($rutaVersionada, 'video') .
-		mostrarFigcaption($ruta, $dimensiones) .
+		// Pasar la ruta absoluta real para filesize() y basename(),
+		// no $rutaWeb que podría ser servir.php?f=... fuera del proyecto.
+		mostrarFigcaption($rutaAbsoluta, $dimensiones) .
 		'</figure>';
 
 	return $html;
@@ -2437,11 +2491,22 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 		$dimensiones = ['', ''];
 	endif;
 
-	$rutaweb = $rutaweboriginal = str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $ruta);
+	// Calcular la URL de visualización según la ubicación del archivo
+	$rutaweb = $rutaweboriginal = urlVisualizacion($ruta);
 
-	if (str_ends_with(strtolower($rutaweb), '.heic')):
-		$rutaweb = generarJPGtemporal($rutaweb);
-		$rutaweb = str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $rutaweb);
+	// Detectar HEIC por la extensión real del archivo, no por la URL de visualización
+	$extReal = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
+	if ($extReal === 'heic'):
+		$rutaweb = generarJPGtemporal($ruta);
+		// El poster siempre se guarda en .posters/ dentro del proyecto
+		$rutaweb = urlVisualizacion(proyectoRaiz() . DIRECTORY_SEPARATOR . $rutaweb);
+	endif;
+	// data-ruta debe contener una ruta real (no servir.php?f=...) para que
+	// procesarPost.php pueda resolverla al guardar metadatos. Para archivos
+	// dentro del proyecto se usa la ruta relativa; fuera del proyecto la absoluta.
+	$rutaPost = $rutaweboriginal;
+	if (str_starts_with($rutaPost, 'servir.php')):
+		$rutaPost = $ruta;
 	endif;
 	$rutawebVersionada = agregarCacheBuster($rutaweb, firmaCacheArchivo($ruta, $dimensiones));
 	$html .=
@@ -2449,14 +2514,16 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 			'<img' .
 			' id="img_' . $id . '"' .
 			' src="' . htmlspecialchars($rutawebVersionada, ENT_QUOTES, 'UTF-8') . '"' .
-			' data-ruta="' . $rutaweboriginal . '"' .
+			' data-ruta="' . htmlspecialchars($rutaPost, ENT_QUOTES, 'UTF-8') . '"' .
 			$atributos .
 			' loading="lazy"' .
 		' data-tipo="img"' .
 		'>' .
 		$svg .
 		mostrarBotonLightbox($rutawebVersionada, 'image') .
-		mostrarFigcaption($rutaweboriginal, $dimensiones[0] . '×' . $dimensiones[1]) .
+		// Pasar la ruta absoluta real para filesize() y basename(),
+		// no $rutaweboriginal que podría ser servir.php?f=... fuera del proyecto.
+		mostrarFigcaption($ruta, $dimensiones[0] . '×' . $dimensiones[1]) .
 		'</figure>';
 
 	return $html;
@@ -2679,17 +2746,32 @@ function generarPosterVideo(string $rutaVideo, string $rutaPoster): bool
  */
 function generarJPGtemporal(string $ruta): string
 {
-	$rutaRaiz = dirname(__DIR__);
+	$rutaRaiz = proyectoRaiz();
 	$rutaAbsoluta = $ruta;
-	if (!str_starts_with($ruta, '/')) {
-		$rutaAbsoluta = $rutaRaiz . DIRECTORY_SEPARATOR . $ruta;
-	} else {
-		$ruta = str_replace($rutaRaiz . DIRECTORY_SEPARATOR, '', $ruta);
-	}
+	$proyectoRoot = str_replace('\\', '/', $rutaRaiz);
+	$rutaNormalizada = str_replace('\\', '/', $ruta);
 
-	$infoarchivo = pathinfo($ruta);
+	// Si es una ruta dentro del proyecto, usar comportamiento original
+	if (str_starts_with($rutaNormalizada, $proyectoRoot . '/')):
+		$rutaRelativa = substr($rutaNormalizada, strlen($proyectoRoot) + 1);
+	// Si es una ruta absoluta fuera del proyecto, extraer solo el nombre base
+	elseif (str_starts_with($ruta, '/')):
+		$rutaRelativa = basename($ruta);
+	else:
+		$rutaRelativa = $ruta;
+		$rutaAbsoluta = $rutaRaiz . DIRECTORY_SEPARATOR . $ruta;
+	endif;
+
+	$infoarchivo = pathinfo($rutaRelativa);
 	$dirname = trim($infoarchivo['dirname'] ?? '', '. /');
-	$prefijo = empty($dirname) ? '' : str_replace(DIRECTORY_SEPARATOR, '-', $dirname) . '-';
+
+	// Para archivos fuera del proyecto, usar un prefijo basado en un hash
+	// para evitar colisiones de nombres
+	if (!str_starts_with($rutaNormalizada, $proyectoRoot . '/')):
+		$prefijo = sha1($rutaAbsoluta) . '-';
+	else:
+		$prefijo = empty($dirname) ? '' : str_replace(DIRECTORY_SEPARATOR, '-', $dirname) . '-';
+	endif;
 
 	$nombretemp = '.posters' . DIRECTORY_SEPARATOR . $prefijo . $infoarchivo['filename'] . '.jpg';
 	$rutaAbsolutaTemp = $rutaRaiz . DIRECTORY_SEPARATOR . $nombretemp;
@@ -2785,7 +2867,9 @@ function dibujarSVG($regiones, $id, $ruta, $rotación = 1)
 			$rancho = $regiones['RegionAreaW'][$k];
 			$x = $regiones['RegionAreaX'][$k] - ($rancho / 2);
 			$y = $regiones['RegionAreaY'][$k] - ($ralto / 2);
-			if ($regiones['RegionAreaUnit'][$k] == 'normalized'):
+			// RegionAreaUnit es opcional; si no está presente se asume 'normalized'
+		$unidad = $regiones['RegionAreaUnit'][$k] ?? 'normalized';
+		if ($unidad === 'normalized'):
 				$ralto = $ralto * $altoCoordenadas;
 				$rancho = $rancho * $anchoCoordenadas;
 				$x = $x * $anchoCoordenadas;
@@ -3789,6 +3873,7 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		'<div class="ruta-local-contenedor">' .
 		'<input type="text" value="' . $rutaLocalAttr . '" class="ruta_local" disabled>' .
 		'<button type="button" id="abrir_archivo_' . $id . '" class="ruta-local-abrir" onclick="abrirArchivo(\'' . $id . '\')" title="Abrir archivo" aria-label="Abrir archivo">↗</button>' .
+		'<button type="button" id="abrir_carpeta_' . $id . '" class="ruta-local-abrir" onclick="abrirCarpeta(\'' . $id . '\')" title="Abrir carpeta contenedora" aria-label="Abrir carpeta contenedora">📂</button>' .
 		'</div>' .
 		'<form id="formulario_' . $id . '">';
 	// Fecha de creación
@@ -4257,10 +4342,13 @@ function crearBloque($ruta, $id, $tipo = 'img')
 		'<button type="button" id="btn_' . $id . '" onclick="guardar(\'' . $id . '\')" title="Guardar datos">💾</button>';
 	if ($tipo == 'img'):
 		$volverRecorte = $_SERVER['REQUEST_URI'] ?? 'index.php';
+		// Las páginas caras.php y recortar.php ahora resuelven
+		// rutas dentro y fuera del proyecto mediante resolverRutaTolerante().
+		$rutaRelEnlace = rutaRelativaParaParametro($ruta);
 		$html .=
-			' <a href="caras.php?foto=' . urlencode(str_replace(dirname(__DIR__) . '/', '', $ruta)) . '" title="Etiquetar personas">🧑🏽</a>';
+			' <a href="caras.php?foto=' . urlencode($rutaRelEnlace) . '" title="Etiquetar personas">🧑🏽</a>';
 		$html .=
-			' <a href="recortar.php?foto=' . urlencode(str_replace(dirname(__DIR__) . '/', '', $ruta)) . '&volver=' . urlencode($volverRecorte) . '" title="Recortar imagen">✂️</a>';
+			' <a href="recortar.php?foto=' . urlencode($rutaRelEnlace) . '&volver=' . urlencode($volverRecorte) . '" title="Recortar imagen">✂️</a>';
 		if ($tieneRegionesCorregibles):
 			$html .=
 				' <button type="button" id="region_horizontal_' . $id . '" onclick="corregirRegiones(\'' . $id . '\', \'horizontal\')" title="Corregir regiones por espejo horizontal" aria-label="Corregir regiones por espejo horizontal">↔️</button>' .
@@ -4338,6 +4426,28 @@ function obtenerIteradorArchivos(
 	endif;
 	$baseDir = rtrim($baseReal, DIRECTORY_SEPARATOR);
 
+	// Separar omisiones: nombres simples vs rutas completas
+	$ignoreBasename = [];
+	$ignorePathname = [];
+	foreach ($ignoreDirs as $item):
+		$item = (string) $item;
+		if ($item === ''):
+			continue;
+		endif;
+		if (str_starts_with($item, '/')):
+			$clave = mb_strtolower(str_replace('\\', '/', $item), 'UTF-8');
+			$ignorePathname[$clave] = true;
+			// También agregar la versión realpath() por si el directorio base
+			// se resolvió a través de un symlink.
+			$real = realpath($item);
+			if ($real !== false && $real !== $item):
+				$ignorePathname[mb_strtolower(str_replace('\\', '/', $real), 'UTF-8')] = true;
+			endif;
+		else:
+			$ignoreBasename[mb_strtolower($item, 'UTF-8')] = true;
+		endif;
+	endforeach;
+
 	// ─────────────────────────────
 	// MODO: UN SOLO ARCHIVO
 	// ─────────────────────────────
@@ -4362,24 +4472,64 @@ function obtenerIteradorArchivos(
 	// ─────────────────────────────
 	// MODO: RECORRER DIRECTORIO
 	// ─────────────────────────────
-	$dir = new RecursiveDirectoryIterator(
-		$baseDir,
-		RecursiveDirectoryIterator::SKIP_DOTS
-	);
+	// Verificar que el directorio base sea legible antes de construir el iterador.
+	// macOS puede restringir el acceso a ciertas carpetas (Downloads, Desktop, etc.)
+	// incluso cuando PHP puede leer otras ubicaciones.
+	if (!is_readable($baseDir)):
+		trigger_error(
+			"El directorio no es legible: $baseDir. Verifica los permisos de macOS TCC.",
+			E_USER_WARNING
+		);
+		return new RecursiveIteratorIterator(
+			new RecursiveArrayIterator([]),
+			RecursiveIteratorIterator::LEAVES_ONLY
+		);
+	endif;
+
+	try {
+		$dir = new RecursiveDirectoryIterator(
+			$baseDir,
+			RecursiveDirectoryIterator::SKIP_DOTS
+		);
+	} catch (UnexpectedValueException $e) {
+		trigger_error(
+			"No se pudo abrir el directorio: $baseDir — " . $e->getMessage(),
+			E_USER_WARNING
+		);
+		return new RecursiveIteratorIterator(
+			new RecursiveArrayIterator([]),
+			RecursiveIteratorIterator::LEAVES_ONLY
+		);
+	}
 
 	$filter = new RecursiveCallbackFilterIterator(
 		$dir,
-		function ($current, $key, $iterator) use ($ignoreDirs) {
+		function ($current, $key, $iterator) use ($ignoreBasename, $ignorePathname) {
 
-			if ($current->isDir() && in_array($current->getFilename(), $ignoreDirs, true)):
-				return false;
+			if ($current->isDir()):
+				$nombre = $current->getFilename();
+				// Omitir por nombre simple
+				if (isset($ignoreBasename[mb_strtolower($nombre, 'UTF-8')])):
+					return false;
+				endif;
+				// Omitir por ruta completa
+				$rutaCompleta = str_replace('\\', '/', $current->getPathname());
+				if (isset($ignorePathname[mb_strtolower($rutaCompleta, 'UTF-8')])):
+					return false;
+				endif;
 			endif;
 
 			return true;
 		}
 	);
 
-	return new RecursiveIteratorIterator($filter);
+	// CATCH_GET_CHILD: si un subdirectorio no puede leerse (permisos),
+	// se omite silenciosamente sin lanzar UnexpectedValueException.
+	return new RecursiveIteratorIterator(
+		$filter,
+		RecursiveIteratorIterator::LEAVES_ONLY,
+		RecursiveIteratorIterator::CATCH_GET_CHILD
+	);
 }
 
 /**
@@ -5698,11 +5848,37 @@ function filtrarResultadosPorMetadatos(array $resultados, array $filtros): array
 }
 
 /**
+ * Calcula la ruta relativa para usar como parámetro, probando primero
+ * contra la raíz de navegación (home) y luego contra la raíz del proyecto.
+ *
+ * @param string $rutaAbsoluta Ruta absoluta del directorio o archivo.
+ * @return string Ruta relativa (sin barra inicial) o cadena vacía.
+ */
+function rutaRelativaParaParametro(string $rutaAbsoluta): string
+{
+	$navRoot = str_replace('\\', '/', obtenerRaizNavegacion());
+	$ruta = str_replace('\\', '/', $rutaAbsoluta);
+
+	if (str_starts_with($ruta, $navRoot . '/')):
+		return ltrim(substr($ruta, strlen($navRoot)), '/');
+	endif;
+
+	$projectRoot = str_replace('\\', '/', proyectoRaiz());
+	if (str_starts_with($ruta, $projectRoot . '/')):
+		return ltrim(substr($ruta, strlen($projectRoot)), '/');
+	endif;
+
+	return ltrim($ruta, '/');
+}
+
+/**
  * Renderiza los controles de filtros de metadatos.
  */
 function formularioFiltrosMetadatos(array $filtros, int $totalFiltrado, int $totalOriginal, string $rutaIterador, int $ver): string
 {
-	$ruta = trim(str_replace(dirname(__DIR__) . DIRECTORY_SEPARATOR, '', $rutaIterador), DIRECTORY_SEPARATOR);
+	// Usar la raíz de navegación para calcular la ruta relativa,
+	// con caída a la raíz del proyecto si la ruta no está en home.
+	$ruta = rutaRelativaParaParametro($rutaIterador);
 	$palabraClave = obtenerPalabraClaveActiva();
 	$mediaActual = isset($_GET['media']) && in_array($_GET['media'], ['fotos', 'videos'], true)
 		? $_GET['media']
@@ -5757,8 +5933,12 @@ function formularioFiltrosMetadatos(array $filtros, int $totalFiltrado, int $tot
 /**
  * Lista recursivamente todas las subcarpetas dentro de un directorio base, omitiendo las especificadas.
  *
+ * Soporta dos modos de omisión:
+ * - Nombre simple:         'Music'       → coincide con getFilename()
+ * - Ruta absoluta o parcial: '/Users/destrella/Music/Music' → coincide con getPathname()
+ *
  * @param string $directorio Ruta de evaluación.
- * @param array $omitir Nombres exactos de las carpetas prohibidas / excluidas.
+ * @param array $omitir Nombres o rutas exactas de carpetas a excluir.
  * @return array Lista plana con las rutas absolutas resueltas a directorios.
  */
 function listarCarpetas($directorio, $omitir)
@@ -5768,37 +5948,98 @@ function listarCarpetas($directorio, $omitir)
 		return [];
 	endif;
 
-	$carpetas = [];
-	$omitidas = array_fill_keys(array_map(
-		static fn($nombre) => mb_strtolower((string) $nombre, 'UTF-8'),
-		$omitir
-	), true);
-
-	$iterador = new RecursiveIteratorIterator(
-		new RecursiveCallbackFilterIterator(
-			new RecursiveDirectoryIterator($directorio, RecursiveDirectoryIterator::SKIP_DOTS),
-			static function (SplFileInfo $elemento) use ($omitidas): bool {
-				if (!$elemento->isDir()):
-					return false;
-				endif;
-
-				$nombre = $elemento->getFilename();
-				if ($nombre === '' || $nombre[0] === '.'):
-					return false;
-				endif;
-
-				return !isset($omitidas[mb_strtolower($nombre, 'UTF-8')]);
-			}
-		),
-		RecursiveIteratorIterator::SELF_FIRST
-	);
-
-	foreach ($iterador as $elemento):
-		$ruta = $elemento->getRealPath();
-		if ($ruta !== false):
-			$carpetas[] = $ruta;
+	// Separar las omisiones: nombres simples (por basename) vs rutas completas (por pathname)
+	$omitidasBasename = [];
+	$omitidasPathname = [];
+	foreach ($omitir as $item):
+		$item = (string) $item;
+		if ($item === ''):
+			continue;
+		endif;
+		$clave = mb_strtolower($item, 'UTF-8');
+		// Si empieza con / es una ruta absoluta → comparar contra pathname
+		if (str_starts_with($item, '/')):
+			$omitidasPathname[$clave] = true;
+			// También agregar la versión realpath() por si el directorio base
+			// se resolvió a través de un symlink (p.ej. /Users → /System/Volumes/...)
+			$real = realpath($item);
+			if ($real !== false && $real !== $item):
+				$omitidasPathname[mb_strtolower(str_replace('\\', '/', $real), 'UTF-8')] = true;
+			endif;
+		else:
+			$omitidasBasename[$clave] = true;
 		endif;
 	endforeach;
+
+	$carpetas = [];
+
+	try {
+		$iterador = new RecursiveIteratorIterator(
+			new RecursiveCallbackFilterIterator(
+				new RecursiveDirectoryIterator($directorio, RecursiveDirectoryIterator::SKIP_DOTS),
+				static function (SplFileInfo $elemento) use ($omitidasBasename, $omitidasPathname): bool {
+					if (!$elemento->isDir()):
+						return false;
+					endif;
+
+					$nombre = $elemento->getFilename();
+					if ($nombre === '' || $nombre[0] === '.'):
+						return false;
+					endif;
+
+					// Omitir por nombre simple
+					if (isset($omitidasBasename[mb_strtolower($nombre, 'UTF-8')])):
+						return false;
+					endif;
+
+					// Omitir por ruta completa
+					$rutaCompleta = str_replace('\\', '/', $elemento->getPathname());
+					if (isset($omitidasPathname[mb_strtolower($rutaCompleta, 'UTF-8')])):
+						return false;
+					endif;
+
+					return true;
+				}
+			),
+			RecursiveIteratorIterator::SELF_FIRST,
+			RecursiveIteratorIterator::CATCH_GET_CHILD
+		);
+
+		foreach ($iterador as $elemento):
+			$ruta = $elemento->getRealPath();
+			if ($ruta !== false):
+				$carpetas[] = $ruta;
+			endif;
+		endforeach;
+
+		// Post-filtro: RecursiveCallbackFilterIterator no siempre impide la
+		// recursión en todas las versiones de PHP. Eliminamos cualquier
+		// resultado que esté dentro de una ruta omitida por pathname completo.
+		if (!empty($omitidasPathname)):
+			$carpetas = array_values(array_filter(
+				$carpetas,
+				static function (string $ruta) use ($omitidasPathname): bool {
+					$rutaNormalizada = mb_strtolower(str_replace('\\', '/', $ruta), 'UTF-8');
+					foreach ($omitidasPathname as $omitida => $_):
+						if (
+							$rutaNormalizada === $omitida
+							|| str_starts_with($rutaNormalizada, $omitida . '/')
+						):
+							return false;
+						endif;
+					endforeach;
+					return true;
+				}
+			));
+		endif;
+	} catch (UnexpectedValueException $e) {
+		// No se pudo leer un subdirectorio (permisos, sandboxing, etc.)
+		// Simplemente se omite y se continúa con los directorios accesibles.
+		trigger_error(
+			'Directorio inaccesible omitido durante listarCarpetas: ' . $e->getMessage(),
+			E_USER_WARNING
+		);
+	}
 
 	return $carpetas;
 }
@@ -6080,16 +6321,18 @@ function paginacion($página_actual, $total_de_paginas, $ver = 0, $ruta = '', $e
 	$rutaparam = '';
 	if ($palabraClaveActiva === ''):
 		if (!empty($ruta)):
-			$ruta = trim(str_replace(dirname(__DIR__), '', $ruta), DIRECTORY_SEPARATOR);
-			if ($ruta !== '' && is_dir($ruta)):
-				$rutaparam = '&ruta=' . rawurlencode($ruta);
-				$rutahidden = '<input type="hidden" name="ruta" value="' . htmlspecialchars($ruta, ENT_QUOTES, 'UTF-8') . '">';
+			// Usar la raíz de navegación para la ruta relativa,
+			// con caída a la raíz del proyecto si la ruta no está en home.
+			$rutaRel = rutaRelativaParaParametro($ruta);
+			if ($rutaRel !== ''):
+				$rutaparam = '&ruta=' . rawurlencode($rutaRel);
+				$rutahidden = '<input type="hidden" name="ruta" value="' . htmlspecialchars($rutaRel, ENT_QUOTES, 'UTF-8') . '">';
 			endif;
 		elseif (defined("CARPETA")):
-			$ruta = trim(str_replace(dirname(__DIR__), '', CARPETA), DIRECTORY_SEPARATOR);
-			if ($ruta !== '' && is_dir($ruta)):
-				$rutaparam = '&ruta=' . rawurlencode($ruta);
-				$rutahidden = '<input type="hidden" name="ruta" value="' . htmlspecialchars($ruta, ENT_QUOTES, 'UTF-8') . '">';
+			$rutaRel = rutaRelativaParaParametro(CARPETA);
+			if ($rutaRel !== ''):
+				$rutaparam = '&ruta=' . rawurlencode($rutaRel);
+				$rutahidden = '<input type="hidden" name="ruta" value="' . htmlspecialchars($rutaRel, ENT_QUOTES, 'UTF-8') . '">';
 			endif;
 		endif;
 	endif;
