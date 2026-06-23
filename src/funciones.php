@@ -4044,6 +4044,7 @@ function crearBloque($ruta, $id, $tipo = 'img')
 				if (is_array($crntmp)):
 					foreach ($crntmp as $k => $v):
 						$v = explode('-keyframe', $v)[0];
+						$v = explode('-timestamp', $v)[0];
 						$crntmp[$k] = $v;
 						if (
 							str_starts_with($v, 'IMG_')
