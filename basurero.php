@@ -154,6 +154,45 @@ if (isset($_GET['accion'])) {
         echo "Proceso completado. $borradas carpetas borradas.\n";
         exit;
     }
+
+    if ($accion === 'borrar_temporales_extracciones') {
+        $dir = $rutaBase . DIRECTORY_SEPARATOR . '.posters' . DIRECTORY_SEPARATOR . 'extracciones';
+        if (is_dir($dir)) {
+            $archivos = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            $total = iterator_count($archivos);
+            echo "Borrando temporales de .posters/extracciones ($total elementos)...\n";
+            flush();
+
+            $borrados = 0;
+            $archivos = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($archivos as $fileinfo) {
+                $ruta = $fileinfo->getRealPath();
+                $nombre = $fileinfo->getFilename();
+                if ($fileinfo->isDir()) {
+                    if (@rmdir($ruta)) {
+                        echo "Carpeta temporal borrada: " . $nombre . "\n";
+                    }
+                } else {
+                    if (@unlink($ruta)) {
+                        echo "Temporal borrado: " . $nombre . "\n";
+                    }
+                }
+                $borrados++;
+                flush();
+                usleep(5000);
+            }
+            echo "Limpieza completada. $borrados elementos eliminados.\n";
+        } else {
+            echo "La carpeta .posters/extracciones no existe.\n";
+        }
+        exit;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -313,6 +352,56 @@ if (isset($_GET['accion'])) {
             <?php endif; ?>
         </details>
 
+        <!-- Temporales de extracciones -->
+        <details>
+            <summary>Temporales en .posters/extracciones</summary>
+            <?php
+            $dirExtracciones = __DIR__ . '/.posters/extracciones';
+            $archivosExtracciones = [];
+            $bytesExtracciones = 0;
+            if (is_dir($dirExtracciones)) {
+                $iterador = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($dirExtracciones, RecursiveDirectoryIterator::SKIP_DOTS)
+                );
+                foreach ($iterador as $archivo) {
+                    if ($archivo->isFile()) {
+                        $tamano = $archivo->getSize();
+                        $bytesExtracciones += $tamano;
+                        $archivosExtracciones[] = [
+                            'ruta' => str_replace(__DIR__ . DIRECTORY_SEPARATOR, '', $archivo->getRealPath()),
+                            'nombre' => $archivo->getFilename(),
+                            'tamano' => $tamano,
+                        ];
+                    }
+                }
+            }
+            usort($archivosExtracciones, static fn($a, $b) => strnatcasecmp($a['ruta'], $b['ruta']));
+            $mbExtracciones = $bytesExtracciones > 0 ? number_format($bytesExtracciones / 1048576, 2) . ' MB' : '0 MB';
+            ?>
+            <p>Total de archivos temporales: <?php echo count($archivosExtracciones); ?> · <?php echo htmlspecialchars($mbExtracciones); ?></p>
+            <button class="btn-accion peligro" onclick="borrarTemporalesExtracciones()">Borrar temporales de extracciones</button>
+            <div id="consola-extracciones" class="consola"></div>
+
+            <?php if (count($archivosExtracciones) > 0): ?>
+            <div class="lista-scroll">
+                <?php foreach ($archivosExtracciones as $archivo): ?>
+                    <div class="item-lista">
+                        <?php
+                        $ext = strtolower(pathinfo($archivo['nombre'], PATHINFO_EXTENSION));
+                        $isImg = in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'], true);
+                        if ($isImg): ?>
+                            <img src="<?php echo htmlspecialchars($archivo['ruta']); ?>" class="miniatura" loading="lazy">
+                        <?php else: ?>
+                            <div class="miniatura" style="display:flex;align-items:center;justify-content:center;font-size:0.8rem;color:#fff;"><?php echo htmlspecialchars($ext); ?></div>
+                        <?php endif; ?>
+                        <span><?php echo htmlspecialchars($archivo['nombre']); ?></span>
+                        <span style="font-size:0.8em;color:var(--grey-text);margin-left:auto;"><?php echo number_format($archivo['tamano'] / 1024, 1); ?> KB · <?php echo htmlspecialchars($archivo['ruta']); ?></span>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+        </details>
+
         <!-- Carpetas Vacías -->
         <details>
             <summary>Carpetas vacías en imgs y listas</summary>
@@ -399,6 +488,14 @@ if (isset($_GET['accion'])) {
     function borrarTodasCarpetas() {
         if (confirm("¿Estás seguro de que deseas borrar todas las carpetas vacías detectadas?")) {
             executeStream('?accion=borrar_todas_carpetas', 'consola-carpetas').then(() => {
+                setTimeout(() => location.reload(), 2000);
+            });
+        }
+    }
+
+    function borrarTemporalesExtracciones() {
+        if (confirm("¿Eliminar todos los archivos temporales de .posters/extracciones?")) {
+            executeStream('?accion=borrar_temporales_extracciones', 'consola-extracciones').then(() => {
                 setTimeout(() => location.reload(), 2000);
             });
         }

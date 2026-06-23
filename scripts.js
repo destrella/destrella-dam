@@ -802,6 +802,13 @@ document.addEventListener('DOMContentLoaded', function () {
 	const tabsLaterales = Array.from(document.querySelectorAll('[data-sidebar-tab]'));
 	const panelesLaterales = Array.from(document.querySelectorAll('.panel-lateral[role="tabpanel"]'));
 	if (tabsLaterales.length && panelesLaterales.length) {
+		const nombresPestanasLaterales = tabsLaterales
+			.map(tab => tab.dataset.sidebarTab)
+			.filter(Boolean);
+		const pestanaLateralDefecto = nombresPestanasLaterales.includes('carpetas')
+			? 'carpetas'
+			: (nombresPestanasLaterales[0] || '');
+
 		function activarPestanaLateral(nombre, guardar = true) {
 			tabsLaterales.forEach(tab => {
 				const activa = tab.dataset.sidebarTab === nombre;
@@ -817,15 +824,44 @@ document.addEventListener('DOMContentLoaded', function () {
 			}
 		}
 
-		const paramsActuales = new URLSearchParams(window.location.search);
-		const pestañaInicial = paramsActuales.get('palabra_clave')
-			? 'palabras'
-			: (leerStorage(clavePestanaLateral) || tabsLaterales.find(tab => tab.classList.contains('activo'))?.dataset.sidebarTab || 'carpetas');
-		activarPestanaLateral(['carpetas', 'palabras'].includes(pestañaInicial) ? pestañaInicial : 'carpetas', false);
+		const pestañaInicial = tabsLaterales.find(tab => tab.classList.contains('activo'))?.dataset.sidebarTab || pestanaLateralDefecto;
+		activarPestanaLateral(nombresPestanasLaterales.includes(pestañaInicial) ? pestañaInicial : pestanaLateralDefecto, false);
+
+		function urlParaPestanaLateral(nombre) {
+			const url = new URL(window.location.href);
+			url.searchParams.delete('pagina');
+			if (nombre === 'yandex') {
+				url.searchParams.set('panel', 'yandex');
+				url.searchParams.delete('palabra_clave');
+				if (!url.searchParams.get('yandex_path')) {
+					url.searchParams.set('yandex_path', '/');
+				}
+			} else if (nombre === 'palabras') {
+				url.searchParams.set('panel', 'palabras');
+				url.searchParams.delete('yandex_path');
+				url.searchParams.delete('yandex_sort');
+			} else {
+				url.searchParams.delete('panel');
+				url.searchParams.delete('yandex_path');
+				url.searchParams.delete('yandex_sort');
+				url.searchParams.delete('palabra_clave');
+			}
+			return url;
+		}
 
 		tabsLaterales.forEach(tab => {
 			tab.addEventListener('click', function () {
-				activarPestanaLateral(tab.dataset.sidebarTab);
+				const nombre = tab.dataset.sidebarTab;
+				if (!nombre) return;
+				const panel = document.getElementById(`panel-${nombre}`);
+				const cargado = panel?.dataset.panelLoaded === '1';
+				const activa = tab.classList.contains('activo');
+				if (activa && cargado) {
+					activarPestanaLateral(nombre);
+					return;
+				}
+				escribirStorage(clavePestanaLateral, nombre);
+				window.location.href = urlParaPestanaLateral(nombre).toString();
 			});
 		});
 	}
@@ -1149,13 +1185,29 @@ document.addEventListener('DOMContentLoaded', function () {
 		buscadorCarpetas.addEventListener('input', filtrarCarpetas);
 	}
 
+	const buscadorYandexDisk = document.getElementById('buscador-yandex-disk');
+	const itemsYandexDisk = Array.from(document.querySelectorAll('.yandex-media-item'));
+	if (buscadorYandexDisk && itemsYandexDisk.length) {
+		function filtrarYandexDisk() {
+			const consulta = normalizarBusquedaLateral(buscadorYandexDisk.value.trim());
+			itemsYandexDisk.forEach(item => {
+				const texto = normalizarBusquedaLateral(item.dataset.yandexBusqueda || item.textContent || '');
+				item.hidden = consulta !== '' && !texto.includes(consulta);
+			});
+		}
+
+		buscadorYandexDisk.addEventListener('input', filtrarYandexDisk);
+	}
+
 	const panelDestino = document.getElementById('panelDetalleContenido');
 	const placeholderPanel = document.querySelector('.panel-detalle-placeholder');
 	const paneles = Array.from(document.querySelectorAll('.panel-articulo[id^="pie_"]'));
-	const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
-	let barraSeleccion = null;
-	let modalMoverLote = null;
-	let operacionLoteEnCurso = false;
+		const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
+		let barraSeleccion = null;
+		let modalMoverLote = null;
+		let modalCopiarYandex = null;
+		let carpetasLocalesProyecto = null;
+		let operacionLoteEnCurso = false;
 
 	function escaparHtmlCliente(valor) {
 		const nodo = document.createElement('span');
@@ -1392,9 +1444,9 @@ document.addEventListener('DOMContentLoaded', function () {
 		return html;
 	}
 
-	async function operarLoteSeleccionado(operacion, extra = {}) {
-		const seleccion = obtenerSeleccionArchivos();
-		if (!seleccion.length || operacionLoteEnCurso) return false;
+		async function operarLoteSeleccionado(operacion, extra = {}) {
+			const seleccion = obtenerSeleccionArchivos();
+			if (!seleccion.length || operacionLoteEnCurso) return false;
 
 		const textosCarga = {
 			mover: 'Moviendo archivos',
@@ -1457,6 +1509,241 @@ document.addEventListener('DOMContentLoaded', function () {
 				actualizarBarraSeleccion();
 				alternarAccionesLoteOcupadas(false);
 			}
+			}
+		}
+
+		async function cargarCarpetasLocalesProyecto() {
+			if (Array.isArray(carpetasLocalesProyecto)) {
+				return carpetasLocalesProyecto;
+			}
+
+			const respuesta = await fetch('carpetas_locales.php', {
+				headers: { 'Accept': 'application/json' }
+			});
+			const datos = await respuesta.json().catch(() => null);
+			if (!respuesta.ok || !datos?.ok || !Array.isArray(datos.carpetas)) {
+				throw new Error(datos?.error || `HTTP ${respuesta.status}`);
+			}
+			carpetasLocalesProyecto = datos.carpetas;
+			return carpetasLocalesProyecto;
+		}
+
+		async function poblarSelectorDestinoYandex(select) {
+			if (!select) return;
+			select.disabled = true;
+			select.textContent = '';
+			const cargando = document.createElement('option');
+			cargando.value = '';
+			cargando.textContent = 'Cargando carpetas...';
+			select.appendChild(cargando);
+
+			const carpetas = await cargarCarpetasLocalesProyecto();
+			select.textContent = '';
+			carpetas.forEach(carpeta => {
+				const option = document.createElement('option');
+				option.value = carpeta.valor || '';
+				option.textContent = carpeta.etiqueta || carpeta.valor || 'Raíz del proyecto';
+				select.appendChild(option);
+			});
+			select.disabled = false;
+		}
+
+		function crearModalCopiarYandex() {
+			if (modalCopiarYandex) return modalCopiarYandex;
+
+			modalCopiarYandex = document.createElement('div');
+			modalCopiarYandex.id = 'modal-yandex-copiar';
+			modalCopiarYandex.className = 'modal-lote';
+			modalCopiarYandex.hidden = true;
+			modalCopiarYandex.setAttribute('role', 'dialog');
+			modalCopiarYandex.setAttribute('aria-modal', 'true');
+			modalCopiarYandex.setAttribute('aria-labelledby', 'modal-yandex-copiar-titulo');
+			modalCopiarYandex.innerHTML =
+				'<div class="modal-lote-panel">' +
+					'<form>' +
+						'<h2 id="modal-yandex-copiar-titulo">Copiar desde Yandex</h2>' +
+						'<p class="modal-lote-contexto" data-yandex-copy-nombre></p>' +
+						'<label>Carpeta destino' +
+							'<select name="destino"></select>' +
+						'</label>' +
+						'<label>Nueva subcarpeta' +
+							'<input type="text" name="subcarpeta" autocomplete="off">' +
+						'</label>' +
+						'<output class="modal-lote-estado" data-yandex-copy-status aria-live="polite"></output>' +
+						'<div class="modal-lote-acciones">' +
+							'<button type="button" data-modal-cancelar>Cancelar</button>' +
+							'<button type="submit">Copiar</button>' +
+						'</div>' +
+					'</form>' +
+				'</div>';
+
+			modalCopiarYandex.addEventListener('click', function (ev) {
+				if (ev.target === modalCopiarYandex || ev.target.closest?.('[data-modal-cancelar]')) {
+					cerrarModalCopiarYandex();
+				}
+			});
+			modalCopiarYandex.querySelector('form').addEventListener('submit', async function (ev) {
+				ev.preventDefault();
+				await copiarYandexALocal(ev.currentTarget);
+			});
+			document.addEventListener('keydown', function (ev) {
+				if (ev.key === 'Escape' && !modalCopiarYandex.hidden) {
+					cerrarModalCopiarYandex();
+				}
+			});
+			document.body.appendChild(modalCopiarYandex);
+			return modalCopiarYandex;
+		}
+
+		function cerrarModalCopiarYandex() {
+			const modal = crearModalCopiarYandex();
+			modal.hidden = true;
+			modal._botonYandex = null;
+			modal.querySelector('form')?.reset();
+			const estado = modal.querySelector('[data-yandex-copy-status]');
+			if (estado) {
+				estado.textContent = '';
+				estado.className = 'modal-lote-estado';
+			}
+		}
+
+		async function abrirModalCopiarYandex(boton) {
+			const modal = crearModalCopiarYandex();
+			modal._botonYandex = boton;
+			const nombre = boton?.dataset.yandexCopyName || 'Archivo de Yandex Disk';
+			const contexto = modal.querySelector('[data-yandex-copy-nombre]');
+			const estado = modal.querySelector('[data-yandex-copy-status]');
+			const select = modal.querySelector('[name="destino"]');
+			if (contexto) contexto.textContent = nombre;
+			if (estado) {
+				estado.textContent = '';
+				estado.className = 'modal-lote-estado';
+			}
+			modal.hidden = false;
+
+			try {
+				await poblarSelectorDestinoYandex(select);
+				requestAnimationFrame(() => select?.focus());
+			} catch (err) {
+				if (estado) {
+					estado.classList.add('error');
+					estado.textContent = err.message || 'No se pudieron cargar las carpetas locales.';
+				}
+			}
+		}
+
+		function mostrarEstadoCopiaYandex(boton, mensaje, error = false) {
+			const panel = boton?.closest?.('.panel-yandex-remoto');
+			if (!panel) return;
+			let estado = panel.querySelector('.yandex-copia-estado');
+			if (!estado) {
+				estado = document.createElement('p');
+				estado.className = 'yandex-copia-estado';
+				estado.setAttribute('aria-live', 'polite');
+				const acciones = panel.querySelector('.yandex-detalle-acciones');
+				acciones?.insertAdjacentElement('afterend', estado);
+			}
+			estado.classList.toggle('error', error);
+			estado.textContent = mensaje;
+		}
+
+		function alternarFormularioCopiarYandex(form, ocupado) {
+			form.querySelectorAll('button, select, input').forEach(control => {
+				control.disabled = ocupado;
+			});
+		}
+
+		async function copiarYandexALocal(form) {
+			const modal = crearModalCopiarYandex();
+			const boton = modal._botonYandex;
+			if (!boton) return;
+
+				const estado = modal.querySelector('[data-yandex-copy-status]');
+				const payload = {
+					path: boton.dataset.yandexCopyPath || '',
+					photo_id: boton.dataset.yandexCopyPhotoId || '',
+					name: boton.dataset.yandexCopyName || '',
+					tipo: boton.dataset.yandexCopyType || '',
+					preview: boton.dataset.yandexCopyPreview || '',
+					destino: form.elements.destino?.value || '',
+					subcarpeta: form.elements.subcarpeta?.value.trim() || ''
+				};
+
+			alternarFormularioCopiarYandex(form, true);
+			boton.disabled = true;
+			boton.setAttribute('aria-busy', 'true');
+			if (estado) {
+				estado.className = 'modal-lote-estado';
+				estado.textContent = 'Copiando archivo...';
+			}
+			mostrarCargaNavegacion('Copiando desde Yandex');
+
+			try {
+				const respuesta = await fetch('yandex_copy.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+					body: JSON.stringify(payload)
+				});
+				const datos = await respuesta.json().catch(() => null);
+				if (!respuesta.ok || !datos?.ok) {
+					throw new Error(datos?.error || `HTTP ${respuesta.status}`);
+				}
+
+				const mensaje = datos.mensaje || `Copiado en ${datos.destino || 'la carpeta seleccionada'}`;
+				if (estado) {
+					estado.classList.add('ok');
+					estado.textContent = mensaje;
+				}
+				mostrarEstadoCopiaYandex(boton, mensaje, false);
+				cerrarModalCopiarYandex();
+			} catch (err) {
+				const mensaje = err.message || 'No se pudo copiar el archivo desde Yandex Disk.';
+				if (estado) {
+					estado.classList.add('error');
+					estado.textContent = mensaje;
+				}
+				mostrarEstadoCopiaYandex(boton, mensaje, true);
+			} finally {
+				alternarFormularioCopiarYandex(form, false);
+				boton.disabled = false;
+				boton.removeAttribute('aria-busy');
+				ocultarCargaNavegacion();
+			}
+		}
+
+		async function enviarYandexPapelera(boton) {
+			const ruta = boton?.dataset.yandexTrashPath || '';
+			const id = boton?.dataset.yandexTrashId || '';
+		if (!ruta || !id) return;
+		if (!confirm(`¿Enviar a la papelera de Yandex Disk?\n${ruta}`)) return;
+
+		boton.disabled = true;
+		boton.setAttribute('aria-busy', 'true');
+		mostrarCargaNavegacion('Enviando a papelera');
+
+		try {
+			const respuesta = await fetch('yandex_trash.php', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+				body: JSON.stringify({ path: ruta })
+			});
+			const datos = await respuesta.json().catch(() => null);
+			if (!respuesta.ok || !datos?.ok) {
+				throw new Error(datos?.error || `HTTP ${respuesta.status}`);
+			}
+
+			if (window.DAM && window.DAM.removerBloqueArticulo) {
+				window.DAM.removerBloqueArticulo(id, `<p><b>Yandex Disk:</b> ${escaparHtmlCliente(ruta)} enviado a la papelera.</p>`);
+			} else {
+				document.getElementById(`art_${id}`)?.remove();
+				document.getElementById(`pie_${id}`)?.remove();
+			}
+		} catch (err) {
+			mostrarMensajeDetalle(`<p class="respuesta_error">${escaparHtmlCliente(err.message || 'No se pudo enviar a la papelera de Yandex Disk.')}</p>`);
+			boton.disabled = false;
+			boton.removeAttribute('aria-busy');
+		} finally {
+			ocultarCargaNavegacion();
 		}
 	}
 
@@ -1475,6 +1762,22 @@ document.addEventListener('DOMContentLoaded', function () {
 			placeholderPanel.hidden = true;
 		}
 	}
+
+		document.addEventListener('click', function (ev) {
+			const boton = ev.target.closest?.('.yandex-descarga-boton[data-yandex-copy-name]');
+			if (!boton) return;
+			ev.preventDefault();
+			ev.stopPropagation();
+			abrirModalCopiarYandex(boton);
+		});
+
+		document.addEventListener('click', function (ev) {
+			const boton = ev.target.closest?.('.yandex-papelera-boton');
+			if (!boton) return;
+			ev.preventDefault();
+		ev.stopPropagation();
+		enviarYandexPapelera(boton);
+	});
 
 	function agregarIndicadorArticulo(contenedor, clase, icono, etiqueta) {
 		const indicador = document.createElement('span');
@@ -1832,21 +2135,36 @@ document.addEventListener('DOMContentLoaded', function () {
 			video.addEventListener('click', function (ev) {
 				ev.stopPropagation();
 			});
-		} else {
-			const img = document.createElement('img');
-			img.className = 'lightbox-media contained';
-			img.alt = '';
-			// Load full-resolution image then decide toggle availability
-			const preload = new Image();
-			preload.onload = function () {
-				img.src = preload.src;
-				img.dataset.nw = preload.naturalWidth;
-				img.dataset.nh = preload.naturalHeight;
-			};
-			preload.src = href;
-			frame.appendChild(img);
-			agregarCapasLightbox(frame, disparador);
-			content.appendChild(frame);
+			} else {
+				const img = document.createElement('img');
+				img.className = 'lightbox-media contained';
+				img.alt = '';
+				const spinner = document.createElement('div');
+				spinner.className = 'lightbox-cargando';
+				spinner.setAttribute('role', 'status');
+				spinner.setAttribute('aria-label', 'Cargando imagen');
+				spinner.innerHTML = '<span></span>';
+				frame.classList.add('is-loading');
+				// Load full-resolution image then decide toggle availability
+				const preload = new Image();
+				preload.onload = function () {
+					img.src = preload.src;
+					img.dataset.nw = preload.naturalWidth;
+					img.dataset.nh = preload.naturalHeight;
+					frame.classList.remove('is-loading');
+					spinner.remove();
+				};
+				preload.onerror = function () {
+					frame.classList.remove('is-loading');
+					spinner.classList.add('lightbox-cargando-error');
+					spinner.removeAttribute('aria-label');
+					spinner.textContent = 'No se pudo cargar la imagen';
+				};
+				preload.src = href;
+				frame.appendChild(spinner);
+				frame.appendChild(img);
+				agregarCapasLightbox(frame, disparador);
+				content.appendChild(frame);
 
 			// Prevent clicks on image from closing the lightbox
 			img.addEventListener('click', function (ev) {

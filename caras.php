@@ -177,6 +177,12 @@ $rutaReal = $rutaReal
 	? resolverRutaTolerante($rutaReal, 'file', false)
 	: FALSE;
 $archivoUrl = $rutaReal ? urlVisualizacion($rutaReal) : FALSE;
+if ($rutaReal && imagenRequiereTemporalNavegador(strtolower(pathinfo($rutaReal, PATHINFO_EXTENSION)))):
+	$archivoTemporal = generarJPGtemporal($rutaReal);
+	if ($archivoTemporal !== ''):
+		$archivoUrl = urlVisualizacion(proyectoRaiz() . DIRECTORY_SEPARATOR . $archivoTemporal);
+	endif;
+endif;
 
 if (!$rutaReal):
 	//OBTENER LAS IMÁGENES DE LA CARPETA
@@ -840,7 +846,7 @@ endif;
 			return str.substr(str.lastIndexOf(sep) + 1);
 		}
 		function esImagenSoportada(imageFile) {
-			const supported = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'avif', 'tif', 'tiff'];
+			const supported = ['jpg', 'jpeg', 'png', 'webp', 'heic', 'avif', 'tif', 'tiff', 'cr2', 'dng'];
 			const ext = imageFile.split('.').pop().toLowerCase();
 			return supported.includes(ext);
 		}

@@ -4,6 +4,7 @@ set_time_limit(300);
 
 require_once "src/funciones.php";
 require_once "src/vistaPrincipal.php";
+require_once "src/yandexDisk.php";
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 	require_once 'src/procesarPost.php';
@@ -23,6 +24,18 @@ $palabraClaveActiva = obtenerPalabraClaveActiva();
 $mediaActual = isset($_GET['media']) && in_array($_GET['media'], ['fotos', 'videos'], true)
 	? $_GET['media']
 	: '';
+$yandexDiskConfigurado = yandexDiskApiKeyConfiguracion($configuracion) !== '';
+$rutaYandexDisk = rutaYandexDiskDesdeFuente($_GET);
+$ordenYandexDisk = ordenYandexDiskDesdeFuente($_GET);
+if (ordenYandexDiskEsUltimosSubidos($ordenYandexDisk)):
+	$rutaYandexDisk = '/';
+endif;
+$vistaYandexDisk = 'disk';
+$panelSolicitado = (string) ($_GET['panel'] ?? '');
+$panelYandexActivo = $panelSolicitado === 'yandex' && $yandexDiskConfigurado && $palabraClaveActiva === '';
+$panelPalabrasActivo = !$panelYandexActivo && ($palabraClaveActiva !== '' || $panelSolicitado === 'palabras');
+$panelCarpetasActivo = !$panelYandexActivo && !$panelPalabrasActivo;
+$modoYandexSolicitado = $panelYandexActivo;
 if ($unarchivo):
 	// Intentar resolver contra la raíz de navegación (home),
 	// con caída a la raíz del proyecto si la ruta no está en home.
@@ -52,7 +65,9 @@ else:
 endif;
 
 $errorDirectorio = '';
-if ($palabraClaveActiva !== ''):
+if ($modoYandexSolicitado):
+	$resultados = [];
+elseif ($palabraClaveActiva !== ''):
 	$resultados = obtenerResultadosPorPalabraClave($palabraClaveActiva, $mediaActual);
 else:
 	// Verificar que el directorio sea legible antes de escanear.
@@ -74,18 +89,21 @@ endif;
 $filtrosMetadatos = obtenerFiltrosMetadatosDesdeFuente();
 $totalSinFiltros = count($resultados);
 $resultados = filtrarResultadosPorMetadatos($resultados, $filtrosMetadatos);
-$palabrasClaveIndexadas = obtenerPalabrasClaveIndexadas();
+$palabrasClaveIndexadas = $panelPalabrasActivo ? obtenerPalabrasClaveIndexadas() : [];
 
 // Listar carpetas desde la raíz de navegación (home del usuario)
 // para que el árbol de directorios comience desde ~/
-$carpetas = listarCarpetas($raizNavegacion, $omitir);
-$carpetas = array_map(function ($carpeta) use ($rutaBase) {
-	return str_replace($rutaBase, "", $carpeta);
-}, $carpetas);
-sort($carpetas);
+$carpetas = [];
+if ($panelCarpetasActivo):
+	$carpetas = listarCarpetas($raizNavegacion, $omitir);
+	$carpetas = array_map(function ($carpeta) use ($rutaBase) {
+		return str_replace($rutaBase, "", $carpeta);
+	}, $carpetas);
+	sort($carpetas);
+endif;
 
 $rutaActivaArbol = trim(str_replace('\\', '/', str_replace($rutaBase, '', $rutaIterador)), '/');
-$arbolCarpetas = construirArbolDirectorios($carpetas, $rutaActivaArbol);
+$arbolCarpetas = $panelCarpetasActivo ? construirArbolDirectorios($carpetas, $rutaActivaArbol) : '';
 
 $datalists =
 	'<datalist id="Ubicaciones">';
@@ -114,7 +132,13 @@ endforeach;
 $datalists .= '</datalist>';
 
 $página_actual = isset($_GET['pagina']) ? (int) $_GET['pagina'] : 1;
+$paginaSolicitada = $página_actual;
 $elementos_por_pagina = isset($_GET['ver']) ? (int) $_GET['ver'] : (int) $configuracion['elementos_por_pagina'];
+if ($elementos_por_pagina < 1):
+	$elementos_por_pagina = max(1, (int) $configuracion['elementos_por_pagina']);
+endif;
+$elementosPorPaginaYandex = max(3, min(21, $elementos_por_pagina));
+$paginaYandexSolicitada = max(1, $paginaSolicitada);
 $total_de_elementos = count($resultados);
 $total_de_paginas = max(1, (int) ceil($total_de_elementos / $elementos_por_pagina));
 
@@ -157,18 +181,109 @@ else:
 	$parametroMedia = '';
 endif;
 $parametrosFiltrosOcultos = inputsOcultosFiltrosMetadatos($filtrosMetadatos);
-$pestanaLateralActiva = $palabraClaveActiva !== '' || (($_GET['panel'] ?? '') === 'palabras')
-	? 'palabras'
-	: 'carpetas';
-$panelCarpetasActivo = $pestanaLateralActiva === 'carpetas';
-$panelPalabrasActivo = $pestanaLateralActiva === 'palabras';
-$listaPalabrasClave = renderizarListaPalabrasClave(
-	$palabrasClaveIndexadas,
-	$palabraClaveActiva,
-	$elementos_por_pagina,
-	$mediaActual,
-	$filtrosMetadatos
-);
+$estadoYandexDiskNavegacion = $panelYandexActivo
+	? obtenerDirectorioYandexDisk($configuracion, $rutaYandexDisk, 200, 0)
+	: [];
+if ($panelYandexActivo):
+	$estadoYandexDiskNavegacion['espacio'] = obtenerEspacioYandexDisk($configuracion);
+endif;
+$estadoYandexDisk = $panelYandexActivo
+	? obtenerPaginaMultimediaYandexDisk(
+		$configuracion,
+		$rutaYandexDisk,
+		$paginaYandexSolicitada,
+		$elementosPorPaginaYandex,
+		$ordenYandexDisk === 'name' ? $estadoYandexDiskNavegacion : null,
+		$ordenYandexDisk
+	)
+	: [];
+if (($estadoYandexDisk['ok'] ?? false) && $panelYandexActivo):
+	$totalYandexMultimedia = max(0, (int) ($estadoYandexDisk['total_multimedia'] ?? 0));
+	$totalPaginasYandex = max(1, (int) ceil($totalYandexMultimedia / $elementosPorPaginaYandex));
+	if ($paginaYandexSolicitada > $totalPaginasYandex):
+		$paginaYandexSolicitada = 1;
+		$estadoYandexDisk = obtenerPaginaMultimediaYandexDisk(
+			$configuracion,
+			$rutaYandexDisk,
+			1,
+			$elementosPorPaginaYandex,
+			$ordenYandexDisk === 'name' ? $estadoYandexDiskNavegacion : null,
+			$ordenYandexDisk
+		);
+	endif;
+endif;
+if ($panelYandexActivo):
+	$resultadosYandex = is_array($estadoYandexDisk['multimedia'] ?? null) ? $estadoYandexDisk['multimedia'] : [];
+	$elementos_por_pagina = $elementosPorPaginaYandex;
+	$totalSinFiltros = max(0, (int) ($estadoYandexDisk['total_multimedia'] ?? 0));
+	$total_de_elementos = $totalSinFiltros;
+	$total_de_paginas = max(1, (int) ceil($total_de_elementos / $elementos_por_pagina));
+	$página_actual = $paginaYandexSolicitada;
+	if ($página_actual < 1 || $página_actual > $total_de_paginas):
+		$página_actual = 1;
+	endif;
+	$indice_inicial = max(0, (int) ($estadoYandexDisk['offset'] ?? (($página_actual - 1) * $elementos_por_pagina)));
+	$indice_final = min($indice_inicial + count($resultadosYandex), $total_de_elementos);
+	$resultados_paginados = $resultadosYandex;
+	$errorDirectorio = '';
+	if (!($estadoYandexDisk['ok'] ?? false)):
+		$html = '<div class="error-directorio yandex-remoto-error" role="alert"><p>⚠️ ' . escaparHtml((string) ($estadoYandexDisk['error'] ?? 'No se pudo leer Yandex Disk.')) . '</p></div>';
+	else:
+		$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, 'No hay multimedia remota en esta página.');
+	endif;
+endif;
+$resumenYandexTotalSufijo = ($panelYandexActivo && !($estadoYandexDisk['total_multimedia_conocido'] ?? true)) ? '+' : '';
+$resumenYandexUbicacion = $panelYandexActivo
+	? (ordenYandexDiskEsUltimosSubidos($ordenYandexDisk) ? 'Últimos subidos' : $rutaYandexDisk)
+	: '';
+$listaPalabrasClave = $panelPalabrasActivo
+	? renderizarListaPalabrasClave(
+		$palabrasClaveIndexadas,
+		$palabraClaveActiva,
+		$elementos_por_pagina,
+		$mediaActual,
+		$filtrosMetadatos
+	)
+	: '';
+
+$panelCarpetasHtml =
+	'<form method="GET" id="panel-carpetas" class="explorador-carpetas panel-lateral" role="tabpanel" aria-labelledby="tab-carpetas" data-panel-loaded="' . ($panelCarpetasActivo ? '1' : '0') . '"' . ($panelCarpetasActivo ? '' : ' hidden') . '>';
+if ($panelCarpetasActivo):
+	$panelCarpetasHtml .=
+		$parametroVer .
+		$parametroMedia .
+		$parametrosFiltrosOcultos .
+		'<label class="buscador-carpetas-label" for="buscador-carpetas">Buscar carpeta</label>' .
+		'<input type="search" id="buscador-carpetas" class="buscador-carpetas" placeholder="Nombre o ruta" autocomplete="off">' .
+		'<div class="arbol-contenedor">' . $arbolCarpetas . '</div>';
+endif;
+$panelCarpetasHtml .= '</form>';
+
+$panelPalabrasHtml =
+	'<section id="panel-palabras" class="palabras-clave-panel panel-lateral" role="tabpanel" aria-labelledby="tab-palabras" data-panel-loaded="' . ($panelPalabrasActivo ? '1' : '0') . '"' . ($panelPalabrasActivo ? '' : ' hidden') . '>';
+if ($panelPalabrasActivo):
+	$panelPalabrasHtml .=
+		'<label class="buscador-carpetas-label" for="buscador-palabras-clave">Filtrar palabras</label>' .
+		'<input type="search" id="buscador-palabras-clave" class="buscador-palabras-clave" placeholder="Palabra clave" autocomplete="off">' .
+		'<button type="button" id="sincronizar-palabras-clave" class="sincronizar-palabras-clave">↻ Sincronizar palabras</button>' .
+		'<div id="sincronizacion-palabras" class="sincronizacion-palabras" hidden>' .
+		'<progress id="sincronizacion-palabras-progreso" value="0" max="1"></progress>' .
+		'<div id="sincronizacion-palabras-mensaje" class="sincronizacion-palabras-mensaje">Preparando sincronización...</div>' .
+		'</div>' .
+		'<div id="palabras-clave-resumen" class="palabras-clave-resumen">' . count($palabrasClaveIndexadas) . ' palabras</div>' .
+		'<div id="palabras-clave-contenedor" class="palabras-clave-contenedor">' .
+		$listaPalabrasClave .
+		'</div>';
+endif;
+$panelPalabrasHtml .= '</section>';
+
+$panelYandexHtml = '';
+if ($yandexDiskConfigurado):
+	$panelYandexHtml =
+		'<section id="panel-yandex" class="yandex-disk-panel-lateral panel-lateral" role="tabpanel" aria-labelledby="tab-yandex" data-panel-loaded="' . ($panelYandexActivo ? '1' : '0') . '"' . ($panelYandexActivo ? '' : ' hidden') . '>' .
+		($panelYandexActivo ? renderizarPanelYandexDisk($estadoYandexDiskNavegacion, $vistaYandexDisk, $ordenYandexDisk) : '') .
+		'</section>';
+endif;
 
 ?><!DOCTYPE html>
 <html lang="es"<?php echo atributoTemaConfiguracion($configuracion); ?>>
@@ -188,44 +303,33 @@ $listaPalabrasClave = renderizarListaPalabrasClave(
 		'<div class="col-carpetas-inner">' .
 		'<div class="explorador-acciones">' .
 		'<a href="configuracion.php" class="enlace-limpieza">⚙️ Configuración</a>' .
-		'</div>' .
-		'<div class="columna-tabs" role="tablist" aria-label="Navegación lateral">' .
-		'<button type="button" id="tab-carpetas" class="columna-tab' . ($panelCarpetasActivo ? ' activo' : '') . '" data-sidebar-tab="carpetas" role="tab" aria-controls="panel-carpetas" aria-selected="' . ($panelCarpetasActivo ? 'true' : 'false') . '">Carpetas</button>' .
-		'<button type="button" id="tab-palabras" class="columna-tab' . ($panelPalabrasActivo ? ' activo' : '') . '" data-sidebar-tab="palabras" role="tab" aria-controls="panel-palabras" aria-selected="' . ($panelPalabrasActivo ? 'true' : 'false') . '">Palabras clave</button>' .
-		'</div>' .
-		'<form method="GET" id="panel-carpetas" class="explorador-carpetas panel-lateral" role="tabpanel" aria-labelledby="tab-carpetas"' . ($panelCarpetasActivo ? '' : ' hidden') . '>' .
-		$parametroVer .
-		$parametroMedia .
-		$parametrosFiltrosOcultos .
-		'<label class="buscador-carpetas-label" for="buscador-carpetas">Buscar carpeta</label>' .
-		'<input type="search" id="buscador-carpetas" class="buscador-carpetas" placeholder="Nombre o ruta" autocomplete="off">' .
-		'<div class="arbol-contenedor">' . $arbolCarpetas . '</div>' .
-		'</form>' .
-		'<section id="panel-palabras" class="palabras-clave-panel panel-lateral" role="tabpanel" aria-labelledby="tab-palabras"' . ($panelPalabrasActivo ? '' : ' hidden') . '>' .
-		'<label class="buscador-carpetas-label" for="buscador-palabras-clave">Filtrar palabras</label>' .
-		'<input type="search" id="buscador-palabras-clave" class="buscador-palabras-clave" placeholder="Palabra clave" autocomplete="off">' .
-		'<button type="button" id="sincronizar-palabras-clave" class="sincronizar-palabras-clave">↻ Sincronizar palabras</button>' .
-		'<div id="sincronizacion-palabras" class="sincronizacion-palabras" hidden>' .
-		'<progress id="sincronizacion-palabras-progreso" value="0" max="1"></progress>' .
-		'<div id="sincronizacion-palabras-mensaje" class="sincronizacion-palabras-mensaje">Preparando sincronización...</div>' .
-		'</div>' .
-		'<div id="palabras-clave-resumen" class="palabras-clave-resumen">' . count($palabrasClaveIndexadas) . ' palabras</div>' .
-		'<div id="palabras-clave-contenedor" class="palabras-clave-contenedor">' .
-		$listaPalabrasClave .
-		'</div>' .
-		'</section>' .
-		'</div>' .
+			'</div>' .
+			'<div class="columna-tabs" role="tablist" aria-label="Navegación lateral">' .
+			'<button type="button" id="tab-carpetas" class="columna-tab' . ($panelCarpetasActivo ? ' activo' : '') . '" data-sidebar-tab="carpetas" role="tab" aria-controls="panel-carpetas" aria-selected="' . ($panelCarpetasActivo ? 'true' : 'false') . '">Carpetas</button>' .
+			'<button type="button" id="tab-palabras" class="columna-tab' . ($panelPalabrasActivo ? ' activo' : '') . '" data-sidebar-tab="palabras" role="tab" aria-controls="panel-palabras" aria-selected="' . ($panelPalabrasActivo ? 'true' : 'false') . '">Palabras clave</button>' .
+			($yandexDiskConfigurado ? '<button type="button" id="tab-yandex" class="columna-tab' . ($panelYandexActivo ? ' activo' : '') . '" data-sidebar-tab="yandex" role="tab" aria-controls="panel-yandex" aria-selected="' . ($panelYandexActivo ? 'true' : 'false') . '">Yandex Disk</button>' : '') .
+			'</div>' .
+			$panelCarpetasHtml .
+			$panelPalabrasHtml .
+			$panelYandexHtml .
+			'</div>' .
 		'</aside>' .
 		'<section class="col-contenido">' .
-		paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador, 'condensado') .
-		formularioFiltrosMetadatos($filtrosMetadatos, $total_de_elementos, $totalSinFiltros, $rutaIterador, $elementos_por_pagina) .
+		($panelYandexActivo
+			? paginacionYandexDisk($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaYandexDisk, 'condensado', $vistaYandexDisk, $ordenYandexDisk)
+			: paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador, 'condensado')) .
+		($panelYandexActivo
+			? renderizarControlesYandexDisk($total_de_elementos, $resumenYandexTotalSufijo, $resumenYandexUbicacion, count($resultados_paginados), $rutaYandexDisk, $elementos_por_pagina, $ordenYandexDisk)
+			: formularioFiltrosMetadatos($filtrosMetadatos, $total_de_elementos, $totalSinFiltros, $rutaIterador, $elementos_por_pagina)) .
 		'<main>' .
 		($errorDirectorio !== ''
 			? '<div class="error-directorio" role="alert"><p>⚠️ ' . $errorDirectorio . '</p></div>'
 			: '') .
 		$html . '</main>' .
-		paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador) .
-		((isset($_GET['debug']) && $_GET['debug'] === '1') ? '<details class="resultados-debug"><summary>Resultados</summary>' . var_dump_pre($resultados) . '</details>' : '') .
+		($panelYandexActivo
+			? paginacionYandexDisk($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaYandexDisk, 'completo', $vistaYandexDisk, $ordenYandexDisk)
+			: paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador)) .
+		((isset($_GET['debug']) && $_GET['debug'] === '1') ? '<details class="resultados-debug"><summary>Resultados</summary>' . var_dump_pre($panelYandexActivo ? $estadoYandexDisk : $resultados) . '</details>' : '') .
 		'</section>' .
 		'<aside class="col-detalle" aria-label="Metadatos">' .
 		'<div class="panel-detalle-placeholder">Selecciona un archivo</div>' .

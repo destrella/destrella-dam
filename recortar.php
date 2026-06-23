@@ -73,14 +73,16 @@ $mensaje = '';
 
 if ($ruta):
 	$extension = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
-	if (in_array($extension, ['heic', 'heif', 'avif', 'tif', 'tiff'], true)):
+	$rutaImagenVisual = $ruta;
+	if (imagenRequiereTemporalNavegador($extension)):
 		$srcTemporal = generarJPGtemporal($ruta);
 		if ($srcTemporal !== ''):
-			$srcImagen = urlVisualizacion(proyectoRaiz() . DIRECTORY_SEPARATOR . $srcTemporal);
+			$rutaImagenVisual = proyectoRaiz() . DIRECTORY_SEPARATOR . $srcTemporal;
+			$srcImagen = urlVisualizacion($rutaImagenVisual);
 		endif;
 	endif;
-	$dimensiones = getimagesize($ruta) ?: [0, 0];
-	$firmaImagen = firmaCacheArchivo($ruta, $dimensiones);
+	$dimensiones = @getimagesize($rutaImagenVisual) ?: @getimagesize($ruta) ?: [0, 0];
+	$firmaImagen = firmaCacheArchivo($rutaImagenVisual, $dimensiones);
 	$metaRegiones = obtenerMetadatos($ruta, [
 		'Orientation',
 		'RegionAppliedToDimensionsW',
