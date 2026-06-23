@@ -22,6 +22,7 @@ datos/*.sqlite
 datos/*.sqlite-*
 datos/*.db
 datos/*.db-*
+datos/yandex_cache/
 
 # Biblioteca multimedia y archivos operativos del DAM
 imgs/
@@ -35,4 +36,3 @@ listas/
 *.temp
 *.bak
 *.orig
-

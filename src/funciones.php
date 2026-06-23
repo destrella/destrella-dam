@@ -522,7 +522,7 @@ function opcionesOrientacionFormulario(string $ruta, string $tipo, mixed $orient
 		8 => 'Rotar 90° a la izquierda',
 	];
 
-	if (in_array($extension, ['jpg', 'jpeg', 'heic', 'webp'], true)):
+	if (in_array($extension, ['jpg', 'jpeg', 'heic', 'webp', 'cr2', 'dng'], true)):
 		return $opcionesExif;
 	endif;
 
@@ -2548,9 +2548,20 @@ function mostrarVideo($ruta, $id)
 
 	return $html;
 }
+
+function extensionesImagenTemporalNavegador(): array
+{
+	return ['heic', 'heif', 'avif', 'tiff', 'tif', 'cr2', 'dng'];
+}
+
+function imagenRequiereTemporalNavegador(string $extension): bool
+{
+	return in_array(strtolower($extension), extensionesImagenTemporalNavegador(), true);
+}
+
 /**
  * Genera el entorno HTML primario (<figure>, <img>) para mostrar una imagen.
- * Agrega conversiones en tiempo real en caso de ser formato HEIC de Apple (para soporte base HTML5).
+ * Agrega conversiones en tiempo real para formatos que no se muestran en navegadores.
  * Adicionalmente, adjunta un SVG overlay opcional y maneja atributos responsivos de lazzy load.
  *
  * @param string $ruta Ubicación del archivo de imagen.
@@ -2565,15 +2576,37 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 		return FALSE;
 	endif;
 	$html = '';
+	$rutaVisualizada = $ruta;
 
-	if (!empty($imageSize)):
-		if (strpos($imageSize, 'x') !== false):
-			$dimensiones = explode('x', $imageSize);
-		elseif (strpos($imageSize, ' ') !== false):
-			$dimensiones = explode(' ', $imageSize);
+	// Calcular la URL de visualización según la ubicación del archivo.
+	$rutaweb = $rutaweboriginal = urlVisualizacion($ruta);
+
+	$extReal = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
+	if (imagenRequiereTemporalNavegador($extReal)):
+		$rutaTemporal = generarJPGtemporal($ruta);
+		if ($rutaTemporal !== ''):
+			$rutaVisualizada = proyectoRaiz() . DIRECTORY_SEPARATOR . $rutaTemporal;
+			$rutaweb = urlVisualizacion($rutaVisualizada);
 		endif;
-	else:
-		$dimensiones = getimagesize($ruta);
+	endif;
+
+	$dimensiones = false;
+	if (!empty($imageSize)):
+		$partesDimensiones = preg_split('/[x\s]+/i', trim($imageSize));
+		if (
+			is_array($partesDimensiones)
+			&& count($partesDimensiones) >= 2
+			&& is_numeric($partesDimensiones[0])
+			&& is_numeric($partesDimensiones[1])
+		):
+			$dimensiones = [(int) $partesDimensiones[0], (int) $partesDimensiones[1]];
+		endif;
+	endif;
+	if (!$dimensiones):
+		$dimensiones = @getimagesize($rutaVisualizada);
+		if (!$dimensiones && $rutaVisualizada !== $ruta):
+			$dimensiones = @getimagesize($ruta);
+		endif;
 	endif;
 	if ($dimensiones):
 		$atributos =
@@ -2583,17 +2616,6 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 		$atributos = '';
 		$dimensiones = ['', ''];
 	endif;
-
-	// Calcular la URL de visualización según la ubicación del archivo
-	$rutaweb = $rutaweboriginal = urlVisualizacion($ruta);
-
-	// Detectar HEIC por la extensión real del archivo, no por la URL de visualización
-	$extReal = strtolower(pathinfo($ruta, PATHINFO_EXTENSION));
-	if ($extReal === 'heic'):
-		$rutaweb = generarJPGtemporal($ruta);
-		// El poster siempre se guarda en .posters/ dentro del proyecto
-		$rutaweb = urlVisualizacion(proyectoRaiz() . DIRECTORY_SEPARATOR . $rutaweb);
-	endif;
 	// data-ruta debe contener una ruta real (no servir.php?f=...) para que
 	// procesarPost.php pueda resolverla al guardar metadatos. Para archivos
 	// dentro del proyecto se usa la ruta relativa; fuera del proyecto la absoluta.
@@ -2601,7 +2623,8 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 	if (str_starts_with($rutaPost, 'servir.php')):
 		$rutaPost = $ruta;
 	endif;
-	$rutawebVersionada = agregarCacheBuster($rutaweb, firmaCacheArchivo($ruta, $dimensiones));
+	$rutawebVersionada = agregarCacheBuster($rutaweb, firmaCacheArchivo($rutaVisualizada, $dimensiones));
+	$textoDimensiones = ($dimensiones[0] !== '' && $dimensiones[1] !== '') ? $dimensiones[0] . '×' . $dimensiones[1] : '';
 	$html .=
 		'<figure>' .
 			'<img' .
@@ -2616,7 +2639,7 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 		mostrarBotonLightbox($rutawebVersionada, 'image') .
 		// Pasar la ruta absoluta real para filesize() y basename(),
 		// no $rutaweboriginal que podría ser servir.php?f=... fuera del proyecto.
-		mostrarFigcaption($ruta, $dimensiones[0] . '×' . $dimensiones[1]) .
+		mostrarFigcaption($ruta, $textoDimensiones) .
 		'</figure>';
 
 	return $html;
@@ -2829,13 +2852,250 @@ function generarPosterVideo(string $rutaVideo, string $rutaPoster): bool
 	return false;
 }
 
+function informacionTemporalMultimedia(string $ruta, ?string $formatoForzado = null): array
+{
+	$rutaRaiz = proyectoRaiz();
+	$rutaAbsoluta = $ruta;
+	$proyectoRoot = str_replace('\\', '/', $rutaRaiz);
+	$rutaNormalizada = str_replace('\\', '/', $ruta);
+
+	if (str_starts_with($rutaNormalizada, $proyectoRoot . '/')):
+		$rutaRelativa = substr($rutaNormalizada, strlen($proyectoRoot) + 1);
+	elseif (str_starts_with($ruta, '/')):
+		$rutaRelativa = basename($ruta);
+	else:
+		$rutaRelativa = $ruta;
+		$rutaAbsoluta = $rutaRaiz . DIRECTORY_SEPARATOR . $ruta;
+	endif;
+
+	$infoarchivo = pathinfo($rutaRelativa);
+	$dirname = trim($infoarchivo['dirname'] ?? '', '. /');
+	if (!str_starts_with($rutaNormalizada, $proyectoRoot . '/')):
+		$prefijo = sha1($rutaAbsoluta) . '-';
+	else:
+		$prefijo = empty($dirname) ? '' : str_replace(DIRECTORY_SEPARATOR, '-', $dirname) . '-';
+	endif;
+
+	$ext = strtolower($infoarchivo['extension'] ?? '');
+	$esVideo = in_array($ext, ['mov', 'mp4', 'mkv', 'webm', 'avi', 'm4v'], true);
+	$formatoTemporal = $formatoForzado ?? ($esVideo ? 'jpg' : formatoTemporalImagenConfiguracion());
+	$nombreTemporal = '.posters' . DIRECTORY_SEPARATOR . $prefijo . $infoarchivo['filename'] . '.' . $formatoTemporal;
+
+	return [
+		'raiz' => $rutaRaiz,
+		'absoluta_fuente' => $rutaAbsoluta,
+		'relativa' => $nombreTemporal,
+		'absoluta' => $rutaRaiz . DIRECTORY_SEPARATOR . $nombreTemporal,
+		'extension' => $ext,
+		'es_video' => $esVideo,
+		'formato' => $formatoTemporal,
+	];
+}
+
+function asegurarDirectorioPosters(): string
+{
+	$directorio = proyectoRaiz() . DIRECTORY_SEPARATOR . '.posters';
+	if (!is_dir($directorio)):
+		mkdir($directorio, 0755, true);
+	endif;
+	return $directorio;
+}
+
+function convertirFuenteTemporalAFormato(string $rutaFuente, string $rutaDestino, string $formato): bool
+{
+	if (!is_file($rutaFuente) || filesize($rutaFuente) <= 0):
+		return false;
+	endif;
+
+	@unlink($rutaDestino);
+	$extFuente = strtolower(pathinfo($rutaFuente, PATHINFO_EXTENSION));
+	if ($formato === 'jpg' && in_array($extFuente, ['jpg', 'jpeg'], true)):
+		return @copy($rutaFuente, $rutaDestino) && is_file($rutaDestino) && filesize($rutaDestino) > 0;
+	endif;
+	if ($formato === 'webp' && $extFuente === 'webp'):
+		return @copy($rutaFuente, $rutaDestino) && is_file($rutaDestino) && filesize($rutaDestino) > 0;
+	endif;
+
+	if ($formato === 'webp'):
+		$cwebp = rutaEjecutableConfiguracion('cwebp');
+		if ($cwebp !== null):
+			$salida = [];
+			$codigo = 1;
+			exec(
+				comandoSeguro([$cwebp, '-quiet', '-q', '88', $rutaFuente, '-o', $rutaDestino]) . ' 2>&1',
+				$salida,
+				$codigo
+			);
+			if ($codigo === 0 && is_file($rutaDestino) && filesize($rutaDestino) > 0):
+				return true;
+			endif;
+		endif;
+	endif;
+
+	$magick = rutaEjecutableConfiguracion('magick') ?? BREW_BIN . 'magick';
+	if (!is_executable($magick)):
+		return false;
+	endif;
+
+	$salida = [];
+	$codigo = 1;
+	$calidad = $formato === 'webp' ? '88' : '92';
+	exec(
+		comandoSeguro([$magick, 'convert', $rutaFuente, '-auto-orient', '-quality', $calidad, $rutaDestino]) . ' 2>&1',
+		$salida,
+		$codigo
+	);
+
+	return $codigo === 0 && is_file($rutaDestino) && filesize($rutaDestino) > 0;
+}
+
+function convertirImagenTemporalConSips(string $rutaAbsoluta, string $rutaAbsolutaTemp, string $formato): bool
+{
+	$sips = rutaEjecutableConfiguracion('sips');
+	if ($sips === null):
+		return false;
+	endif;
+
+	$rutaJpegTemporal = $rutaAbsolutaTemp . '.tmp.jpg';
+	@unlink($rutaJpegTemporal);
+	$salida = [];
+	$codigo = 1;
+	exec(
+		comandoSeguro([$sips, '-s', 'format', 'jpeg', $rutaAbsoluta, '--out', $rutaJpegTemporal]) . ' 2>&1',
+		$salida,
+		$codigo
+	);
+	if ($codigo !== 0 || !is_file($rutaJpegTemporal) || filesize($rutaJpegTemporal) <= 0):
+		@unlink($rutaJpegTemporal);
+		return false;
+	endif;
+
+	$ok = convertirFuenteTemporalAFormato($rutaJpegTemporal, $rutaAbsolutaTemp, $formato);
+	@unlink($rutaJpegTemporal);
+	return $ok;
+}
+
+function convertirImagenTemporalConExiftool(string $rutaAbsoluta, string $rutaAbsolutaTemp, string $formato): bool
+{
+	$exiftool = rutaEjecutableConfiguracion('exiftool');
+	if ($exiftool === null):
+		return false;
+	endif;
+
+	foreach (['PreviewImage', 'JpgFromRaw', 'ThumbnailImage'] as $etiqueta):
+		$rutaJpegTemporal = $rutaAbsolutaTemp . '.tmp-' . strtolower($etiqueta) . '.jpg';
+		@unlink($rutaJpegTemporal);
+		$salida = [];
+		$codigo = 1;
+		exec(
+			comandoSeguro([$exiftool, '-b', '-' . $etiqueta, $rutaAbsoluta]) . ' > ' . escapeshellarg($rutaJpegTemporal) . ' 2>/dev/null',
+			$salida,
+			$codigo
+		);
+		if ($codigo === 0 && is_file($rutaJpegTemporal) && filesize($rutaJpegTemporal) > 0):
+			$ok = convertirFuenteTemporalAFormato($rutaJpegTemporal, $rutaAbsolutaTemp, $formato);
+			@unlink($rutaJpegTemporal);
+			if ($ok):
+				return true;
+			endif;
+		endif;
+		@unlink($rutaJpegTemporal);
+	endforeach;
+
+	return false;
+}
+
+function convertirImagenTemporalConMagick(string $rutaAbsoluta, string $rutaAbsolutaTemp, string $formato): bool
+{
+	$magick = rutaEjecutableConfiguracion('magick') ?? BREW_BIN . 'magick';
+	@unlink($rutaAbsolutaTemp);
+
+	if (is_executable($magick)):
+		if ($formato === 'webp' && !magickTemporalWebpSoportado()):
+			$rutaPngTemporal = $rutaAbsolutaTemp . '.tmp.png';
+			@unlink($rutaPngTemporal);
+			$salida = [];
+			$codigo = 1;
+			exec(
+				comandoSeguro([$magick, 'convert', $rutaAbsoluta, '-auto-orient', $rutaPngTemporal]) . ' 2>&1',
+				$salida,
+				$codigo
+			);
+			if (
+				$codigo === 0
+				&& is_file($rutaPngTemporal)
+				&& filesize($rutaPngTemporal) > 0
+				&& convertirFuenteTemporalAFormato($rutaPngTemporal, $rutaAbsolutaTemp, 'webp')
+			):
+				@unlink($rutaPngTemporal);
+				return true;
+			endif;
+			@unlink($rutaPngTemporal);
+		else:
+			$calidad = $formato === 'webp' ? '88' : '92';
+			$salida = [];
+			$codigo = 1;
+			exec(
+				comandoSeguro([$magick, 'convert', $rutaAbsoluta, '-auto-orient', '-quality', $calidad, $rutaAbsolutaTemp]) . ' 2>&1',
+				$salida,
+				$codigo
+			);
+			if ($codigo === 0 && is_file($rutaAbsolutaTemp) && filesize($rutaAbsolutaTemp) > 0):
+				return true;
+			endif;
+		endif;
+	endif;
+
+	return convertirImagenTemporalConSips($rutaAbsoluta, $rutaAbsolutaTemp, $formato)
+		|| convertirImagenTemporalConExiftool($rutaAbsoluta, $rutaAbsolutaTemp, $formato);
+}
+
+function guardarPreviewTemporalDesdeContenido(string $rutaOriginal, string $cuerpo, string $mime = 'image/jpeg'): string
+{
+	if ($cuerpo === ''):
+		return '';
+	endif;
+
+	$info = informacionTemporalMultimedia($rutaOriginal);
+	$directorioPosters = asegurarDirectorioPosters();
+	$mime = strtolower(trim(explode(';', $mime)[0]));
+	$extensionFuente = match ($mime) {
+		'image/png' => 'png',
+		'image/webp' => 'webp',
+		'image/gif' => 'gif',
+		default => 'jpg',
+	};
+
+	$rutaTemporalBase = tempnam($directorioPosters, '.dam-preview-');
+	if ($rutaTemporalBase === false):
+		return '';
+	endif;
+	$rutaTemporalFuente = $rutaTemporalBase . '.' . $extensionFuente;
+	if (!@rename($rutaTemporalBase, $rutaTemporalFuente)):
+		@unlink($rutaTemporalBase);
+	endif;
+	if (file_put_contents($rutaTemporalFuente, $cuerpo) === false):
+		@unlink($rutaTemporalFuente);
+		return '';
+	endif;
+
+	$ok = convertirFuenteTemporalAFormato($rutaTemporalFuente, (string) $info['absoluta'], (string) $info['formato']);
+	@unlink($rutaTemporalFuente);
+	if (!$ok):
+		@unlink((string) $info['absoluta']);
+		return '';
+	endif;
+	@chmod((string) $info['absoluta'], 0644);
+	return (string) $info['relativa'];
+}
+
 /**
- * Crea una copia temporal formato JPG (caché local) extraída de fuentes más pesadas.
- * Útil para videos o imágenes en formato HEIC de iPhone que no muestran preview en navegadores.
+ * Crea una copia temporal de fuentes más pesadas en .posters.
+ * Útil para videos o imágenes que no muestran preview en navegadores.
  * Transcodifica la media utilizando ImageMagick y FFmpeg, devolviendo la ubicación nueva.
  *
  * @param string $ruta Archivo problemático/pesado en cuestión.
- * @return string Ruta relativa resultante del `.jpg` provisorio generado.
+ * @return string Ruta relativa resultante del temporal generado.
  */
 function generarJPGtemporal(string $ruta): string
 {
@@ -2866,15 +3126,16 @@ function generarJPGtemporal(string $ruta): string
 		$prefijo = empty($dirname) ? '' : str_replace(DIRECTORY_SEPARATOR, '-', $dirname) . '-';
 	endif;
 
-	$nombretemp = '.posters' . DIRECTORY_SEPARATOR . $prefijo . $infoarchivo['filename'] . '.jpg';
+	$ext = strtolower($infoarchivo['extension'] ?? '');
+	$esVideo = in_array($ext, ['mov', 'mp4', 'mkv', 'webm', 'avi', 'm4v'], true);
+	$formatoTemporal = $esVideo ? 'jpg' : formatoTemporalImagenConfiguracion();
+	$nombretemp = '.posters' . DIRECTORY_SEPARATOR . $prefijo . $infoarchivo['filename'] . '.' . $formatoTemporal;
 	$rutaAbsolutaTemp = $rutaRaiz . DIRECTORY_SEPARATOR . $nombretemp;
 
 	if (!is_dir($rutaRaiz . DIRECTORY_SEPARATOR . '.posters')) {
 		mkdir($rutaRaiz . DIRECTORY_SEPARATOR . '.posters', 0755, true);
 	}
 
-	$ext = strtolower($infoarchivo['extension'] ?? '');
-	$esVideo = in_array($ext, ['mov', 'mp4', 'mkv', 'webm', 'avi', 'm4v']);
 	$posterNecesitaActualizar =
 		!file_exists($rutaAbsolutaTemp)
 		|| filesize($rutaAbsolutaTemp) == 0
@@ -2884,8 +3145,8 @@ function generarJPGtemporal(string $ruta): string
 	if (
 		$posterNecesitaActualizar
 	):
-		if (in_array($ext, ['heic', 'avif', 'tiff', 'tif'])):
-			exec(BREW_BIN . 'magick convert ' . escapeshellarg($rutaAbsoluta) . ' ' . escapeshellarg($rutaAbsolutaTemp));
+		if (imagenRequiereTemporalNavegador($ext)):
+			convertirImagenTemporalConMagick($rutaAbsoluta, $rutaAbsolutaTemp, $formatoTemporal);
 		elseif ($esVideo):
 			generarPosterVideo($rutaAbsoluta, $rutaAbsolutaTemp);
 		endif;
@@ -2914,7 +3175,7 @@ function dibujarSVG($regiones, $id, $ruta, $rotación = 1)
 		return;
 	endif;
 
-	$dimensionesArchivo = getimagesize($ruta);
+	$dimensionesArchivo = @getimagesize($ruta);
 	$anchoArchivo = (float) ($dimensionesArchivo[0] ?? 0);
 	$altoArchivo = (float) ($dimensionesArchivo[1] ?? 0);
 	if (array_key_exists('RegionAppliedToDimensionsW', $regiones) && array_key_exists('RegionAppliedToDimensionsH', $regiones)):
@@ -4720,11 +4981,13 @@ function obtenerResultadosMultimedia(
 			case 'jpg':
 			case 'jpeg':
 			case 'webp':
-			case 'png':
-			case 'heic':
-				if ($incluirFotos):
-					$idx = filemtime($archivo->getPathname());
-					while (array_key_exists($idx, $resultados)):
+				case 'png':
+				case 'heic':
+				case 'cr2':
+				case 'dng':
+					if ($incluirFotos):
+						$idx = filemtime($archivo->getPathname());
+						while (array_key_exists($idx, $resultados)):
 						$idx += 1;
 					endwhile;
 					$resultados[$idx] = [$archivo->getPathname(), 'img'];
@@ -5030,7 +5293,7 @@ function conectarBaseFiltrosMetadatos(): ?PDO
 function tipoMultimediaDesdeRuta(string $ruta): ?string
 {
 	return match (strtolower(pathinfo($ruta, PATHINFO_EXTENSION))) {
-		'jpg', 'jpeg', 'webp', 'png', 'heic' => 'img',
+		'jpg', 'jpeg', 'webp', 'png', 'heic', 'cr2', 'dng' => 'img',
 		'mp4', 'mov' => 'vid',
 		default => null,
 	};

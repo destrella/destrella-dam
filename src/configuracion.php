@@ -7,8 +7,62 @@ function configuracionPorDefecto(): array
 		'tema' => 'sistema',
 		'estado_arbol' => 'expandido',
 		'ruta_archivar' => 'listas',
+		'yandex_disk_api_key' => '',
+		'formato_temporal_imagen' => formatoTemporalImagenPorDefecto(),
 		'carpetas_ignoradas' => ['.basura', 'css', 'js', 'src', 'datos', '.posters', '.dtrash'],
 	];
+}
+
+function rutaEjecutableConfiguracion(string $binario): ?string
+{
+	foreach (['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'] as $directorio):
+		$ruta = $directorio . DIRECTORY_SEPARATOR . $binario;
+		if (is_executable($ruta)):
+			return $ruta;
+		endif;
+	endforeach;
+	return null;
+}
+
+function magickTemporalWebpSoportado(): bool
+{
+	static $soportado = null;
+	if ($soportado !== null):
+		return $soportado;
+	endif;
+
+	$magick = rutaEjecutableConfiguracion('magick');
+	if ($magick === null || !function_exists('shell_exec')):
+		$soportado = false;
+		return $soportado;
+	endif;
+
+	$salida = @shell_exec(escapeshellarg($magick) . ' -list format WEBP 2>/dev/null');
+	$soportado = is_string($salida) && stripos($salida, 'WEBP') !== false;
+	return $soportado;
+}
+
+function magickTemporalImagenDisponible(): bool
+{
+	return rutaEjecutableConfiguracion('magick') !== null;
+}
+
+function conversorTemporalImagenDisponible(): bool
+{
+	return magickTemporalImagenDisponible()
+		|| rutaEjecutableConfiguracion('sips') !== null
+		|| rutaEjecutableConfiguracion('exiftool') !== null;
+}
+
+function webpTemporalImagenSoportado(): bool
+{
+	return conversorTemporalImagenDisponible()
+		&& (magickTemporalWebpSoportado() || rutaEjecutableConfiguracion('cwebp') !== null);
+}
+
+function formatoTemporalImagenPorDefecto(): string
+{
+	return webpTemporalImagenSoportado() ? 'webp' : 'jpg';
 }
 
 function rutaArchivoConfiguracion(): string
@@ -53,6 +107,26 @@ function normalizarRutaRelativaConfiguracion(string $ruta, string $fallback): st
 	return $ruta;
 }
 
+function normalizarYandexDiskApiKey(mixed $valor): string
+{
+	$token = trim((string) $valor);
+	$token = preg_replace('/^Authorization:\s*/i', '', $token) ?? $token;
+	$token = preg_replace('/^(OAuth|Bearer)\s+/i', '', $token) ?? $token;
+	return trim($token);
+}
+
+function normalizarFormatoTemporalImagen(mixed $valor): string
+{
+	$formato = strtolower(trim((string) $valor));
+	if (!in_array($formato, ['jpg', 'webp'], true)):
+		$formato = formatoTemporalImagenPorDefecto();
+	endif;
+	if ($formato === 'webp' && !webpTemporalImagenSoportado()):
+		return 'jpg';
+	endif;
+	return $formato;
+}
+
 function normalizarConfiguracion(array $datos): array
 {
 	$defaults = configuracionPorDefecto();
@@ -66,6 +140,8 @@ function normalizarConfiguracion(array $datos): array
 		$config['estado_arbol'] = $defaults['estado_arbol'];
 	endif;
 	$config['ruta_archivar'] = normalizarRutaRelativaConfiguracion((string) ($config['ruta_archivar'] ?? ''), $defaults['ruta_archivar']);
+	$config['yandex_disk_api_key'] = normalizarYandexDiskApiKey($config['yandex_disk_api_key'] ?? '');
+	$config['formato_temporal_imagen'] = normalizarFormatoTemporalImagen($config['formato_temporal_imagen'] ?? $defaults['formato_temporal_imagen']);
 	$config['carpetas_ignoradas'] = normalizarCarpetasIgnoradas($config['carpetas_ignoradas'] ?? []);
 
 	return $config;
@@ -119,9 +195,21 @@ function carpetasIgnoradasConfiguracion(?array $configuracion = null): array
 	return normalizarCarpetasIgnoradas($configuracion['carpetas_ignoradas'] ?? []);
 }
 
+function yandexDiskApiKeyConfiguracion(?array $configuracion = null): string
+{
+	$configuracion ??= cargarConfiguracion();
+	return normalizarYandexDiskApiKey($configuracion['yandex_disk_api_key'] ?? '');
+}
+
+function formatoTemporalImagenConfiguracion(?array $configuracion = null): string
+{
+	$configuracion ??= cargarConfiguracion();
+	return normalizarFormatoTemporalImagen($configuracion['formato_temporal_imagen'] ?? formatoTemporalImagenPorDefecto());
+}
+
 function extensionesMultimediaConfiguracion(): array
 {
-	return ['jpg', 'jpeg', 'webp', 'png', 'heic', 'gif', 'mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'];
+	return ['jpg', 'jpeg', 'webp', 'png', 'heic', 'gif', 'cr2', 'dng', 'mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'];
 }
 
 function contarMultimediaBasura(): int

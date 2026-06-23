@@ -12,6 +12,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'):
 			'tema' => $_POST['tema'] ?? '',
 			'estado_arbol' => $_POST['estado_arbol'] ?? '',
 			'ruta_archivar' => $_POST['ruta_archivar'] ?? '',
+			'yandex_disk_api_key' => $_POST['yandex_disk_api_key'] ?? '',
+			'formato_temporal_imagen' => $_POST['formato_temporal_imagen'] ?? '',
 			'carpetas_ignoradas' => $_POST['carpetas_ignoradas'] ?? '',
 		]);
 		$mensaje = 'Configuración guardada.';
@@ -26,6 +28,8 @@ function config_h($valor): string
 }
 
 $carpetasIgnoradas = implode("\n", $configuracion['carpetas_ignoradas'] ?? []);
+$formatoTemporalImagen = formatoTemporalImagenConfiguracion($configuracion);
+$webpTemporalSoportado = webpTemporalImagenSoportado();
 ?>
 <!DOCTYPE html>
 <html lang="es"<?php echo atributoTemaConfiguracion($configuracion); ?>>
@@ -75,6 +79,20 @@ $carpetasIgnoradas = implode("\n", $configuracion['carpetas_ignoradas'] ?? []);
 					<label>
 						<span>Ruta para archivar</span>
 						<input type="text" name="ruta_archivar" value="<?php echo config_h($configuracion['ruta_archivar']); ?>">
+					</label>
+
+					<label>
+						<span>API Key de Yandex.Disk</span>
+						<input type="password" name="yandex_disk_api_key" autocomplete="off" value="<?php echo config_h($configuracion['yandex_disk_api_key'] ?? ''); ?>" placeholder="OAuth token">
+					</label>
+
+					<label>
+						<span>Formato de temporales de imagen</span>
+						<select name="formato_temporal_imagen">
+							<option value="webp"<?php echo $formatoTemporalImagen === 'webp' ? ' selected' : ''; ?><?php echo $webpTemporalSoportado ? '' : ' disabled'; ?>>WebP<?php echo $webpTemporalSoportado ? '' : ' (no disponible)'; ?></option>
+							<option value="jpg"<?php echo $formatoTemporalImagen === 'jpg' ? ' selected' : ''; ?>>JPG</option>
+						</select>
+						<small>Se usa para convertir previews temporales de RAW, HEIC, AVIF y TIFF dentro de .posters.</small>
 					</label>
 
 					<label>
