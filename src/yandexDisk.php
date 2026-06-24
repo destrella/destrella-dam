@@ -130,6 +130,143 @@ function guardarCacheYandexDisk(string $clave, array $datos): void
 	file_put_contents($archivo, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
+function yandexDiskCacheItemCoincideRuta(array $item, string $ruta): bool
+{
+	$meta = is_array($item['meta'] ?? null) ? $item['meta'] : [];
+	foreach (['path', 'id'] as $campo):
+		if (isset($item[$campo]) && is_scalar($item[$campo]) && normalizarRutaYandexDisk($item[$campo]) === $ruta):
+			return true;
+		endif;
+		if (isset($meta[$campo]) && is_scalar($meta[$campo]) && normalizarRutaYandexDisk($meta[$campo]) === $ruta):
+			return true;
+		endif;
+	endforeach;
+
+	return false;
+}
+
+function yandexDiskCacheFiltrarItemsPorRuta(array $items, string $ruta, int &$eliminados): array
+{
+	$filtrados = [];
+	foreach ($items as $item):
+		if (is_array($item) && yandexDiskCacheItemCoincideRuta($item, $ruta)):
+			$eliminados++;
+			continue;
+		endif;
+		$filtrados[] = $item;
+	endforeach;
+
+	return $filtrados;
+}
+
+function yandexDiskReconstruirGruposMd5Indice(array &$indice): void
+{
+	$recursos = is_array($indice['resources'] ?? null) ? $indice['resources'] : [];
+	ksort($recursos);
+	$indice['resources'] = $recursos;
+	$indice['md5_groups'] = [];
+
+	$grupos = [];
+	foreach ($indice['resources'] as $ruta => $entrada):
+		if (!is_array($entrada)):
+			continue;
+		endif;
+		$md5 = trim((string) ($entrada['md5'] ?? ''));
+		if ($md5 === ''):
+			continue;
+		endif;
+		$grupos[$md5][] = (string) $ruta;
+	endforeach;
+
+	foreach ($grupos as $md5 => $rutas):
+		if (count($rutas) > 1):
+			sort($rutas);
+			$indice['md5_groups'][$md5] = $rutas;
+		endif;
+	endforeach;
+	ksort($indice['md5_groups']);
+}
+
+function eliminarIndiceRecursoYandexDisk(string $ruta): bool
+{
+	$ruta = normalizarRutaYandexDisk($ruta);
+	$archivo = rutaArchivoIndiceYandexDisk();
+	if (!is_file($archivo)):
+		return false;
+	endif;
+
+	$indice = json_decode((string) file_get_contents($archivo), true);
+	if (!is_array($indice) || (int) ($indice['version'] ?? 0) !== YANDEX_DISK_CACHE_VERSION):
+		return false;
+	endif;
+	if (!is_array($indice['resources'] ?? null) || !array_key_exists($ruta, $indice['resources'])):
+		return false;
+	endif;
+
+	unset($indice['resources'][$ruta]);
+	yandexDiskReconstruirGruposMd5Indice($indice);
+	$indice['updated_at'] = gmdate(DATE_ATOM);
+
+	return file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false;
+}
+
+function depurarCacheRecursoYandexDisk(string $ruta): array
+{
+	$ruta = normalizarRutaYandexDisk($ruta);
+	$resultado = [
+		'ruta' => $ruta,
+		'archivos_actualizados' => 0,
+		'items_eliminados' => 0,
+		'indice_actualizado' => false,
+	];
+	if ($ruta === '/' || !prepararDirectorioCacheYandexDisk()):
+		return $resultado;
+	endif;
+
+	foreach (glob(rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'resources*.json') ?: [] as $archivo):
+		if (!is_file($archivo)):
+			continue;
+		endif;
+
+		$payload = json_decode((string) file_get_contents($archivo), true);
+		if (!is_array($payload) || (int) ($payload['version'] ?? 0) !== YANDEX_DISK_CACHE_VERSION || !is_array($payload['data'] ?? null)):
+			continue;
+		endif;
+
+		if (yandexDiskCacheItemCoincideRuta($payload['data'], $ruta)):
+			if (@unlink($archivo)):
+				$resultado['archivos_actualizados']++;
+				$resultado['items_eliminados']++;
+			endif;
+			continue;
+		endif;
+
+		$eliminados = 0;
+		if (is_array($payload['data']['_embedded']['items'] ?? null)):
+			$payload['data']['_embedded']['items'] = yandexDiskCacheFiltrarItemsPorRuta($payload['data']['_embedded']['items'], $ruta, $eliminados);
+			if ($eliminados > 0 && isset($payload['data']['_embedded']['total']) && is_numeric($payload['data']['_embedded']['total'])):
+				$payload['data']['_embedded']['total'] = max(0, (int) $payload['data']['_embedded']['total'] - $eliminados);
+			endif;
+		endif;
+
+		if (is_array($payload['data']['items'] ?? null)):
+			$payload['data']['items'] = yandexDiskCacheFiltrarItemsPorRuta($payload['data']['items'], $ruta, $eliminados);
+		endif;
+
+		if ($eliminados <= 0):
+			continue;
+		endif;
+
+		if (file_put_contents($archivo, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false):
+			$resultado['archivos_actualizados']++;
+			$resultado['items_eliminados'] += $eliminados;
+		endif;
+	endforeach;
+
+	$resultado['indice_actualizado'] = eliminarIndiceRecursoYandexDisk($ruta);
+	return $resultado;
+}
+
 function yandexDiskExtraerValorTexto(array $item, array $campos, array $meta = []): string
 {
 	foreach ($campos as $campo):
@@ -182,6 +319,16 @@ function yandexDiskExtraerEntradaIndice(array $item): ?array
 	$tamano = is_numeric($tamanoFuente) ? max(0, (int) $tamanoFuente) : null;
 	$mime = yandexDiskExtraerValorTexto($item, ['mime_type', 'mimetype'], $meta);
 	$mediaType = mb_strtolower(yandexDiskExtraerValorTexto($item, ['media_type', 'mediatype'], $meta), 'UTF-8');
+	$exif = is_array($item['exif'] ?? null) ? $item['exif'] : (is_array($meta['exif'] ?? null) ? $meta['exif'] : []);
+	$ancho = yandexDiskEnteroDesdeCampos($item, ['width', 'image_width', 'ImageWidth'])
+		?? yandexDiskEnteroDesdeCampos($meta, ['width', 'image_width', 'ImageWidth'])
+		?? yandexDiskEnteroDesdeCampos($exif, ['width', 'image_width', 'ImageWidth', 'ExifImageWidth', 'PixelXDimension']);
+	$alto = yandexDiskEnteroDesdeCampos($item, ['height', 'image_height', 'ImageHeight'])
+		?? yandexDiskEnteroDesdeCampos($meta, ['height', 'image_height', 'ImageHeight'])
+		?? yandexDiskEnteroDesdeCampos($exif, ['height', 'image_height', 'ImageHeight', 'ExifImageHeight', 'PixelYDimension']);
+	$duracion = yandexDiskEnteroDesdeCampos($item, ['duration', 'duracion'])
+		?? yandexDiskEnteroDesdeCampos($meta, ['duration', 'duracion'])
+		?? yandexDiskEnteroDesdeCampos($exif, ['duration', 'duracion']);
 	$desdeUnlimited = yandexDiskRutaEsPhotounlim($ruta) || yandexDiskRutaEsPhotounlim((string) ($item['id'] ?? ''));
 
 	return [
@@ -195,6 +342,10 @@ function yandexDiskExtraerEntradaIndice(array $item): ?array
 		'sha256' => yandexDiskExtraerValorTexto($item, ['sha256'], $meta),
 		'resource_id' => yandexDiskExtraerValorTexto($item, ['resource_id'], $meta),
 		'tamano' => $tamano,
+		'ancho' => $ancho ?? 0,
+		'alto' => $alto ?? 0,
+		'duracion' => $duracion ?? 0,
+		'exif' => $exif,
 		'creado' => yandexDiskFechaRecurso($item['created'] ?? $item['ctime'] ?? ''),
 		'modificado' => yandexDiskFechaRecurso($item['modified'] ?? $item['mtime'] ?? $item['utime'] ?? $item['created'] ?? $item['ctime'] ?? ''),
 		'desde_unlimited' => $desdeUnlimited,
@@ -239,22 +390,7 @@ function actualizarIndiceRecursosYandexDisk(array $recursos): void
 		$indice['resources'][$ruta] = $entrada;
 	endforeach;
 
-	ksort($indice['resources']);
-	$grupos = [];
-	foreach ($indice['resources'] as $ruta => $entrada):
-		$md5 = trim((string) ($entrada['md5'] ?? ''));
-		if ($md5 === ''):
-			continue;
-		endif;
-		$grupos[$md5][] = $ruta;
-	endforeach;
-	foreach ($grupos as $md5 => $rutas):
-		if (count($rutas) > 1):
-			sort($rutas);
-			$indice['md5_groups'][$md5] = $rutas;
-		endif;
-	endforeach;
-	ksort($indice['md5_groups']);
+	yandexDiskReconstruirGruposMd5Indice($indice);
 	$indice['updated_at'] = gmdate(DATE_ATOM);
 
 	file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
@@ -854,11 +990,14 @@ function enviarPapeleraYandexDisk(array $configuracion, string $ruta): array
 		return ['ok' => false, 'status' => (int) ($respuesta['status'] ?? 502), 'error' => $respuesta['error'] ?? 'No se pudo enviar el archivo a la papelera.'];
 	endif;
 
+	$cache = depurarCacheRecursoYandexDisk($ruta);
+
 	return [
 		'ok' => true,
 		'status' => (int) ($respuesta['status'] ?? 200),
 		'error' => '',
 		'data' => $respuesta['data'] ?? [],
+		'cache' => $cache,
 	];
 }
 

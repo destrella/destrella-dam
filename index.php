@@ -5,6 +5,7 @@ set_time_limit(300);
 require_once "src/funciones.php";
 require_once "src/vistaPrincipal.php";
 require_once "src/yandexDisk.php";
+require_once "src/duplicados.php";
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST'):
 	require_once 'src/procesarPost.php';
@@ -32,9 +33,10 @@ if (ordenYandexDiskEsUltimosSubidos($ordenYandexDisk)):
 endif;
 $vistaYandexDisk = 'disk';
 $panelSolicitado = (string) ($_GET['panel'] ?? '');
+$panelDuplicadosActivo = $panelSolicitado === 'duplicados' && $palabraClaveActiva === '';
 $panelYandexActivo = $panelSolicitado === 'yandex' && $yandexDiskConfigurado && $palabraClaveActiva === '';
-$panelPalabrasActivo = !$panelYandexActivo && ($palabraClaveActiva !== '' || $panelSolicitado === 'palabras');
-$panelCarpetasActivo = !$panelYandexActivo && !$panelPalabrasActivo;
+$panelPalabrasActivo = !$panelYandexActivo && !$panelDuplicadosActivo && ($palabraClaveActiva !== '' || $panelSolicitado === 'palabras');
+$panelCarpetasActivo = !$panelYandexActivo && !$panelDuplicadosActivo && !$panelPalabrasActivo;
 $modoYandexSolicitado = $panelYandexActivo;
 if ($unarchivo):
 	// Intentar resolver contra la raíz de navegación (home),
@@ -66,6 +68,8 @@ endif;
 
 $errorDirectorio = '';
 if ($modoYandexSolicitado):
+	$resultados = [];
+elseif ($panelDuplicadosActivo):
 	$resultados = [];
 elseif ($palabraClaveActiva !== ''):
 	$resultados = obtenerResultadosPorPalabraClave($palabraClaveActiva, $mediaActual);
@@ -232,6 +236,18 @@ if ($panelYandexActivo):
 		$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, 'No hay multimedia remota en esta página.');
 	endif;
 endif;
+$estadoDuplicados = $panelDuplicadosActivo ? duplicadosEstado(['ruta' => rutaRelativaParaParametro($rutaIterador)]) : [];
+if ($panelDuplicadosActivo):
+	$html = renderizarVistaDuplicados($estadoDuplicados);
+	$total_de_elementos = (int) ($estadoDuplicados['resumen']['entradas'] ?? 0);
+	$totalSinFiltros = $total_de_elementos;
+	$total_de_paginas = 1;
+	$página_actual = 1;
+	$indice_inicial = 0;
+	$indice_final = $total_de_elementos;
+	$resultados_paginados = [];
+	$errorDirectorio = '';
+endif;
 $resumenYandexTotalSufijo = ($panelYandexActivo && !($estadoYandexDisk['total_multimedia_conocido'] ?? true)) ? '+' : '';
 $resumenYandexUbicacion = $panelYandexActivo
 	? (ordenYandexDiskEsUltimosSubidos($ordenYandexDisk) ? 'Últimos subidos' : $rutaYandexDisk)
@@ -277,6 +293,13 @@ if ($panelPalabrasActivo):
 endif;
 $panelPalabrasHtml .= '</section>';
 
+$panelDuplicadosHtml =
+	'<section id="panel-duplicados" class="duplicados-panel-lateral panel-lateral" role="tabpanel" aria-labelledby="tab-duplicados" data-panel-loaded="' . ($panelDuplicadosActivo ? '1' : '0') . '"' . ($panelDuplicadosActivo ? '' : ' hidden') . '>';
+if ($panelDuplicadosActivo):
+	$panelDuplicadosHtml .= renderizarPanelDuplicados($estadoDuplicados);
+endif;
+$panelDuplicadosHtml .= '</section>';
+
 $panelYandexHtml = '';
 if ($yandexDiskConfigurado):
 	$panelYandexHtml =
@@ -307,20 +330,22 @@ endif;
 			'<div class="columna-tabs" role="tablist" aria-label="Navegación lateral">' .
 			'<button type="button" id="tab-carpetas" class="columna-tab' . ($panelCarpetasActivo ? ' activo' : '') . '" data-sidebar-tab="carpetas" role="tab" aria-controls="panel-carpetas" aria-selected="' . ($panelCarpetasActivo ? 'true' : 'false') . '">Carpetas</button>' .
 			'<button type="button" id="tab-palabras" class="columna-tab' . ($panelPalabrasActivo ? ' activo' : '') . '" data-sidebar-tab="palabras" role="tab" aria-controls="panel-palabras" aria-selected="' . ($panelPalabrasActivo ? 'true' : 'false') . '">Palabras clave</button>' .
+			'<button type="button" id="tab-duplicados" class="columna-tab' . ($panelDuplicadosActivo ? ' activo' : '') . '" data-sidebar-tab="duplicados" role="tab" aria-controls="panel-duplicados" aria-selected="' . ($panelDuplicadosActivo ? 'true' : 'false') . '">Duplicados</button>' .
 			($yandexDiskConfigurado ? '<button type="button" id="tab-yandex" class="columna-tab' . ($panelYandexActivo ? ' activo' : '') . '" data-sidebar-tab="yandex" role="tab" aria-controls="panel-yandex" aria-selected="' . ($panelYandexActivo ? 'true' : 'false') . '">Yandex Disk</button>' : '') .
 			'</div>' .
 			$panelCarpetasHtml .
 			$panelPalabrasHtml .
+			$panelDuplicadosHtml .
 			$panelYandexHtml .
 			'</div>' .
 		'</aside>' .
 		'<section class="col-contenido">' .
 		($panelYandexActivo
 			? paginacionYandexDisk($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaYandexDisk, 'condensado', $vistaYandexDisk, $ordenYandexDisk)
-			: paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador, 'condensado')) .
+			: ($panelDuplicadosActivo ? '' : paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador, 'condensado'))) .
 		($panelYandexActivo
 			? renderizarControlesYandexDisk($total_de_elementos, $resumenYandexTotalSufijo, $resumenYandexUbicacion, count($resultados_paginados), $rutaYandexDisk, $elementos_por_pagina, $ordenYandexDisk)
-			: formularioFiltrosMetadatos($filtrosMetadatos, $total_de_elementos, $totalSinFiltros, $rutaIterador, $elementos_por_pagina)) .
+			: ($panelDuplicadosActivo ? renderizarControlesDuplicados($estadoDuplicados) : formularioFiltrosMetadatos($filtrosMetadatos, $total_de_elementos, $totalSinFiltros, $rutaIterador, $elementos_por_pagina))) .
 		'<main>' .
 		($errorDirectorio !== ''
 			? '<div class="error-directorio" role="alert"><p>⚠️ ' . $errorDirectorio . '</p></div>'
@@ -328,8 +353,8 @@ endif;
 		$html . '</main>' .
 		($panelYandexActivo
 			? paginacionYandexDisk($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaYandexDisk, 'completo', $vistaYandexDisk, $ordenYandexDisk)
-			: paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador)) .
-		((isset($_GET['debug']) && $_GET['debug'] === '1') ? '<details class="resultados-debug"><summary>Resultados</summary>' . var_dump_pre($panelYandexActivo ? $estadoYandexDisk : $resultados) . '</details>' : '') .
+			: ($panelDuplicadosActivo ? '' : paginacion($página_actual, $total_de_paginas, $elementos_por_pagina, $rutaIterador))) .
+		((isset($_GET['debug']) && $_GET['debug'] === '1') ? '<details class="resultados-debug"><summary>Resultados</summary>' . var_dump_pre($panelYandexActivo ? $estadoYandexDisk : ($panelDuplicadosActivo ? $estadoDuplicados : $resultados)) . '</details>' : '') .
 		'</section>' .
 		'<aside class="col-detalle" aria-label="Metadatos">' .
 		'<div class="panel-detalle-placeholder">Selecciona un archivo</div>' .

@@ -119,6 +119,10 @@ function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, 
 			return resultadoOperacionArchivo(false, $rutaOrigen, $rutaDestino, 'Se copió el archivo pero no se pudo eliminar el original.', $directorioOrigen);
 		endif;
 	endif;
+	if (function_exists('duplicadosEliminarHashLocal')):
+		duplicadosEliminarHashLocal($rutaOrigen);
+		duplicadosEliminarHashLocal($rutaDestino);
+	endif;
 
 	if ($mantenerEnIndice):
 		$tipoIndice = tipoMultimediaDesdeRuta($rutaDestino);
@@ -309,6 +313,32 @@ if (array_key_exists('operacion_lote', $json)):
 		'redirect_raiz' => vistaDebeVolverARaiz($json),
 		'mensaje' => count($ok) . ' archivo' . (count($ok) === 1 ? '' : 's') . ' procesado' . (count($ok) === 1 ? '' : 's') . '.',
 	], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+	exit;
+endif;
+
+if (array_key_exists('duplicados_accion', $json)):
+	header('Content-Type: application/json; charset=UTF-8');
+	$accionDuplicados = (string) ($json['duplicados_accion'] ?? 'estado');
+	$baseDuplicados = duplicadosResolverBaseLocal($json['ruta'] ?? '');
+	$okDuplicados = true;
+	$errorDuplicados = '';
+
+	if ($accionDuplicados === 'iniciar'):
+		$resultadoDuplicados = duplicadosIniciarTrabajo($baseDuplicados, !empty($json['forzar']));
+		$okDuplicados = (bool) ($resultadoDuplicados['ok'] ?? false);
+		$errorDuplicados = (string) ($resultadoDuplicados['error'] ?? '');
+	elseif ($accionDuplicados === 'cancelar'):
+		duplicadosCancelarTrabajo();
+	elseif ($accionDuplicados !== 'estado'):
+		http_response_code(400);
+		$okDuplicados = false;
+		$errorDuplicados = 'Acción de duplicados inválida.';
+	endif;
+
+	echo json_encode(
+		duplicadosRespuestaAjax(duplicadosEstado(['ruta' => rutaRelativaParaParametro($baseDuplicados)]), $okDuplicados, $errorDuplicados),
+		JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+	);
 	exit;
 endif;
 
@@ -649,6 +679,9 @@ elseif (array_key_exists('subject', $json)):
 	$salida = [];
 	$respuesta = exec($comando, $salida);
 	if (is_file($rutaMetadatos)):
+		if (function_exists('duplicadosEliminarHashLocal')):
+			duplicadosEliminarHashLocal($rutaMetadatos);
+		endif;
 		actualizarIndicePalabrasClave([[$rutaMetadatos, $mediaMetadatos]], 0, true);
 		limpiarPalabrasClaveSinUso();
 		// Etiqueta Finder

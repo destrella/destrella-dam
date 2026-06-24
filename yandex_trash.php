@@ -44,6 +44,7 @@ endif;
 echo json_encode([
 	'ok' => true,
 	'path' => $ruta,
+	'cache' => $resultado['cache'] ?? null,
 ], JSON_UNESCAPED_UNICODE);
 
 ?>

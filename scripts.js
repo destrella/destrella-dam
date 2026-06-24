@@ -836,6 +836,12 @@ document.addEventListener('DOMContentLoaded', function () {
 				if (!url.searchParams.get('yandex_path')) {
 					url.searchParams.set('yandex_path', '/');
 				}
+			} else if (nombre === 'duplicados') {
+				url.searchParams.set('panel', 'duplicados');
+				url.searchParams.delete('pagina');
+				url.searchParams.delete('palabra_clave');
+				url.searchParams.delete('yandex_path');
+				url.searchParams.delete('yandex_sort');
 			} else if (nombre === 'palabras') {
 				url.searchParams.set('panel', 'palabras');
 				url.searchParams.delete('yandex_path');
@@ -866,7 +872,429 @@ document.addEventListener('DOMContentLoaded', function () {
 		});
 	}
 
-	const buscadorPalabrasClave = document.getElementById('buscador-palabras-clave');
+		const vistaDuplicados = document.getElementById('duplicados-vista');
+		if (vistaDuplicados) {
+			const botonIniciarDuplicados = document.getElementById('duplicados-iniciar');
+			const botonRecalcularDuplicados = document.getElementById('duplicados-recalcular');
+			const botonCancelarDuplicados = document.getElementById('duplicados-cancelar');
+			const progresoDuplicados = document.getElementById('duplicados-progreso');
+			const mensajeDuplicados = document.getElementById('duplicados-mensaje');
+			const resultadosDuplicados = document.getElementById('duplicados-resultados');
+			const buscadorDuplicados = document.getElementById('duplicados-buscador');
+			let temporizadorDuplicados = null;
+			let itemDuplicadoActivo = null;
+
+			function trabajoDuplicadosActivo(job) {
+				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
+			}
+
+			function datosDuplicadoDesdeElemento(elemento) {
+				const dataset = elemento?.dataset || {};
+				return {
+					origen: dataset.duplicadoOrigen || '',
+					origenEtiqueta: dataset.duplicadoOrigenEtiqueta || dataset.duplicadoOrigen || '',
+					ruta: dataset.duplicadoRuta || '',
+					nombre: dataset.duplicadoNombre || dataset.duplicadoRuta || '',
+					kind: dataset.duplicadoKind || '',
+					preview: dataset.duplicadoPreview || '',
+					media: dataset.duplicadoMedia || dataset.duplicadoPreview || '',
+					open: dataset.duplicadoOpen || '',
+					actionLabel: dataset.duplicadoActionLabel || 'Descartar',
+					md5: dataset.duplicadoMd5 || '',
+					sha256: dataset.duplicadoSha256 || '',
+					contenidoHash: dataset.duplicadoContenidoHash || '',
+					perceptualHash: dataset.duplicadoPerceptualHash || '',
+					tamano: dataset.duplicadoTamano || '',
+					modificado: dataset.duplicadoModificado || '',
+					dimensiones: dataset.duplicadoDimensiones || '',
+					duracion: dataset.duplicadoDuracion || '',
+					mime: dataset.duplicadoMime || ''
+				};
+			}
+
+			function ocultarPanelesArticulosParaDuplicados() {
+				document.querySelectorAll('main article[data-panel-id]').forEach(item => item.classList.remove('activo'));
+				document.querySelectorAll('.panel-articulo[id^="pie_"]').forEach(panel => {
+					panel.hidden = true;
+				});
+				const placeholder = document.querySelector('.panel-detalle-placeholder');
+				if (placeholder) {
+					placeholder.hidden = true;
+				}
+			}
+
+			function htmlMetaDuplicado(etiqueta, valor) {
+				if (!valor) return '';
+				return `<dt>${escaparHtmlCliente(etiqueta)}</dt><dd>${escaparHtmlCliente(valor)}</dd>`;
+			}
+
+			function htmlVistaPreviaDuplicado(datos) {
+				const src = datos.preview || datos.media || '';
+				const media = datos.media || src;
+				if (datos.kind === 'image' && src) {
+					return '<figure class="duplicados-preview-media">' +
+						`<a href="${escaparHtmlCliente(media)}" target="_blank" rel="noopener noreferrer">` +
+						`<img src="${escaparHtmlCliente(src)}" alt="${escaparHtmlCliente(datos.nombre)}" loading="lazy">` +
+						'</a>' +
+						'</figure>';
+				}
+				if (datos.kind === 'video' && src) {
+					return '<figure class="duplicados-preview-media">' +
+						`<video src="${escaparHtmlCliente(src)}" controls preload="metadata"></video>` +
+						'</figure>';
+				}
+
+				return '<div class="duplicados-preview-sin-media">Vista previa no disponible.</div>';
+			}
+
+			function mostrarResultadoAccionDuplicado(mensaje, error = false) {
+				const panel = document.getElementById('panelDetalleContenido');
+				if (!panel) return;
+				ocultarPanelesArticulosParaDuplicados();
+				document.querySelectorAll('.duplicados-item.activo').forEach(item => item.classList.remove('activo'));
+				itemDuplicadoActivo = null;
+				panel.innerHTML =
+					'<section class="duplicados-preview-panel duplicados-preview-resultado">' +
+					`<p class="${error ? 'respuesta_error' : 'duplicados-accion-ok'}">${escaparHtmlCliente(mensaje)}</p>` +
+					'</section>';
+			}
+
+			function mostrarEstadoDetalleDuplicado(mensaje, error = false) {
+				const estado = document.querySelector('[data-duplicado-panel-estado]');
+				if (!estado) return;
+				estado.classList.toggle('error', error);
+				estado.textContent = mensaje;
+			}
+
+			function mostrarDetalleDuplicado(item) {
+				if (!item) return;
+				const panel = document.getElementById('panelDetalleContenido');
+				if (!panel) return;
+
+				const datos = datosDuplicadoDesdeElemento(item);
+				ocultarPanelesArticulosParaDuplicados();
+				document.querySelectorAll('.duplicados-item.activo').forEach(actual => actual.classList.toggle('activo', actual === item));
+				item.classList.add('activo');
+				itemDuplicadoActivo = item;
+
+				const abrir = datos.open
+					? `<a href="${escaparHtmlCliente(datos.open)}" target="_blank" rel="noopener noreferrer">Abrir</a>`
+					: '';
+				panel.innerHTML =
+					'<section class="duplicados-preview-panel">' +
+						'<div class="duplicados-preview-encabezado">' +
+							`<span class="duplicados-origen duplicados-origen-${escaparHtmlCliente(datos.origen)}">${escaparHtmlCliente(datos.origenEtiqueta)}</span>` +
+						'</div>' +
+						htmlVistaPreviaDuplicado(datos) +
+						'<div class="duplicados-preview-identidad">' +
+							`<h2>${escaparHtmlCliente(datos.nombre)}</h2>` +
+							`<code>${escaparHtmlCliente(datos.ruta)}</code>` +
+						'</div>' +
+						'<div class="duplicados-detalle-acciones">' +
+							`<button type="button" data-duplicado-panel-accion>${escaparHtmlCliente(datos.actionLabel)}</button>` +
+							abrir +
+						'</div>' +
+						'<dl class="duplicados-preview-metadatos">' +
+							htmlMetaDuplicado('Tamaño', datos.tamano) +
+							htmlMetaDuplicado('Dimensiones', datos.dimensiones) +
+							htmlMetaDuplicado('Duración', datos.duracion) +
+							htmlMetaDuplicado('Modificado', datos.modificado) +
+							htmlMetaDuplicado('MIME', datos.mime) +
+							htmlMetaDuplicado('MD5', datos.md5) +
+							htmlMetaDuplicado('SHA-256', datos.sha256) +
+							htmlMetaDuplicado('Píxeles', datos.contenidoHash) +
+							htmlMetaDuplicado('dHash', datos.perceptualHash) +
+						'</dl>' +
+						'<p class="duplicados-accion-estado" data-duplicado-panel-estado aria-live="polite"></p>' +
+					'</section>';
+
+				const botonAccion = panel.querySelector('[data-duplicado-panel-accion]');
+				if (botonAccion) {
+					botonAccion._duplicadoDatos = datos;
+				}
+			}
+
+			function actualizarSeleccionGrupoDuplicados(grupo) {
+				if (!grupo) return;
+				const seleccionados = grupo.querySelectorAll('[data-duplicado-item].seleccionado').length;
+				const botonGrupo = grupo.querySelector('[data-duplicado-descartar-grupo]');
+				const resumen = grupo.querySelector('[data-duplicado-seleccion-resumen]');
+				if (botonGrupo) {
+					botonGrupo.disabled = seleccionados === 0;
+				}
+				if (resumen) {
+					resumen.textContent = seleccionados === 1 ? '1 seleccionado' : `${seleccionados} seleccionados`;
+				}
+			}
+
+			function alternarSeleccionDuplicado(item) {
+				if (!item) return;
+				const seleccionado = !item.classList.contains('seleccionado');
+				item.classList.toggle('seleccionado', seleccionado);
+				const boton = item.querySelector('[data-duplicado-seleccionar]');
+				if (boton) {
+					boton.setAttribute('aria-pressed', seleccionado ? 'true' : 'false');
+					boton.textContent = seleccionado ? 'Quitar selección' : 'Seleccionar para borrar';
+				}
+				actualizarSeleccionGrupoDuplicados(item.closest('[data-duplicado-grupo]'));
+			}
+
+			async function ejecutarAccionDuplicado(datos) {
+				if (!datos.ruta) {
+					throw new Error('No hay ruta para procesar.');
+				}
+				if (datos.origen === 'local') {
+					const respuesta = await fetch('index.php', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+						body: JSON.stringify({ borrar: datos.ruta })
+					});
+					const texto = await respuesta.text();
+					const primeraLinea = (texto.split(/\r?\n/)[0] || '').trim();
+					if (!respuesta.ok || primeraLinea !== '1') {
+						throw new Error('No se pudo descartar el archivo local.');
+					}
+					return;
+				}
+				if (datos.origen === 'yandex') {
+					const respuesta = await fetch('yandex_trash.php', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+						body: JSON.stringify({ path: datos.ruta })
+					});
+					const payload = await respuesta.json().catch(() => null);
+					if (!respuesta.ok || !payload?.ok) {
+						throw new Error(payload?.error || 'No se pudo enviar a la papelera de Yandex Disk.');
+					}
+					return;
+				}
+
+				throw new Error('Origen de archivo no soportado.');
+			}
+
+			function confirmarAccionDuplicado(datos) {
+				const accion = datos.origen === 'yandex' ? 'Enviar a la papelera de Yandex Disk' : 'Descartar el archivo local';
+				return confirm(`${accion}?\n${datos.ruta}`);
+			}
+
+			async function refrescarDuplicadosTrasAccion(mensaje) {
+				const datos = await solicitarDuplicados('estado');
+				pintarEstadoDuplicados(datos);
+				mostrarResultadoAccionDuplicado(mensaje);
+			}
+
+			async function procesarDuplicadoInteractivo(datos, boton) {
+				if (!confirmarAccionDuplicado(datos)) return;
+
+				if (boton) {
+					boton.disabled = true;
+					boton.setAttribute('aria-busy', 'true');
+				}
+				mostrarCargaNavegacion(datos.actionLabel || 'Procesando');
+
+				try {
+					await ejecutarAccionDuplicado(datos);
+					await refrescarDuplicadosTrasAccion(`${datos.actionLabel}: ${datos.ruta}`);
+				} catch (err) {
+					mostrarEstadoDetalleDuplicado(err.message || 'No se pudo procesar el archivo.', true);
+					if (boton) {
+						boton.disabled = false;
+						boton.removeAttribute('aria-busy');
+					}
+				} finally {
+					ocultarCargaNavegacion();
+				}
+			}
+
+			async function procesarSeleccionGrupoDuplicados(grupo, boton) {
+				const items = Array.from(grupo?.querySelectorAll('[data-duplicado-item].seleccionado') || []);
+				if (!items.length) return;
+				if (!confirm(`¿Procesar ${items.length} archivo${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'}?`)) return;
+
+				if (boton) {
+					boton.disabled = true;
+					boton.setAttribute('aria-busy', 'true');
+				}
+				mostrarCargaNavegacion('Procesando duplicados');
+
+				const errores = [];
+				let procesados = 0;
+				for (const item of items) {
+					const datos = datosDuplicadoDesdeElemento(item);
+					item.classList.add('procesando');
+					try {
+						await ejecutarAccionDuplicado(datos);
+						procesados++;
+						item.classList.add('procesado');
+					} catch (err) {
+						errores.push(`${datos.nombre || datos.ruta}: ${err.message || 'No se pudo procesar.'}`);
+						item.classList.add('error');
+					} finally {
+						item.classList.remove('procesando');
+					}
+				}
+
+				try {
+					const datos = await solicitarDuplicados('estado');
+					pintarEstadoDuplicados(datos);
+				} catch (err) {
+					errores.push(`Actualización de la lista: ${err.message || 'falló'}`);
+				}
+
+				if (errores.length) {
+					mostrarResultadoAccionDuplicado(`${procesados} procesados. Errores: ${errores.slice(0, 3).join(' | ')}`, true);
+				} else {
+					mostrarResultadoAccionDuplicado(`${procesados} archivos procesados.`);
+				}
+				ocultarCargaNavegacion();
+				if (boton) {
+					boton.removeAttribute('aria-busy');
+					actualizarSeleccionGrupoDuplicados(grupo);
+				}
+			}
+
+			function actualizarFiltroDuplicados() {
+				if (!buscadorDuplicados) return;
+				const consulta = normalizarBusquedaLateral(buscadorDuplicados.value.trim());
+				document.querySelectorAll('.duplicados-grupo').forEach(grupo => {
+					const texto = normalizarBusquedaLateral(grupo.dataset.duplicadosBusqueda || grupo.textContent || '');
+					grupo.hidden = consulta !== '' && !texto.includes(consulta);
+				});
+			}
+
+			function pintarEstadoDuplicados(datos) {
+				const estado = datos?.estado || {};
+				const job = estado.job || null;
+				const activo = trabajoDuplicadosActivo(job);
+				const total = Number(job?.total || 0);
+				const procesados = Number(job?.procesados || 0);
+				if (progresoDuplicados) {
+					if (total > 0) {
+						progresoDuplicados.max = total;
+						progresoDuplicados.value = Math.max(0, Math.min(procesados, total));
+					} else if (activo) {
+						progresoDuplicados.removeAttribute('value');
+					} else {
+						progresoDuplicados.max = 1;
+						progresoDuplicados.value = 1;
+					}
+				}
+				if (mensajeDuplicados) {
+					const resumen = estado.resumen || {};
+					const mensaje = job?.mensaje || `${Number(resumen.grupos || 0)} grupos encontrados.`;
+					mensajeDuplicados.textContent = datos?.error || mensaje;
+				}
+				if (resultadosDuplicados && typeof datos?.html_resultados === 'string') {
+					resultadosDuplicados.innerHTML = datos.html_resultados;
+					actualizarFiltroDuplicados();
+				}
+				if (botonIniciarDuplicados) botonIniciarDuplicados.disabled = activo;
+				if (botonRecalcularDuplicados) botonRecalcularDuplicados.disabled = activo;
+				if (botonCancelarDuplicados) botonCancelarDuplicados.disabled = !activo;
+				return activo;
+			}
+
+			async function solicitarDuplicados(accion, extra = {}) {
+				const respuesta = await fetch('index.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+					body: JSON.stringify({
+						duplicados_accion: accion,
+						ruta: vistaDuplicados.dataset.duplicadosRuta || '',
+						...extra
+					})
+				});
+				if (!respuesta.ok) {
+					throw new Error(`HTTP ${respuesta.status}`);
+				}
+				return respuesta.json();
+			}
+
+			function programarMonitoreoDuplicados() {
+				window.clearTimeout(temporizadorDuplicados);
+				temporizadorDuplicados = window.setTimeout(async () => {
+					try {
+						const datos = await solicitarDuplicados('estado');
+						if (pintarEstadoDuplicados(datos)) {
+							programarMonitoreoDuplicados();
+						}
+					} catch (err) {
+						if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo leer el progreso: ${err.message}`;
+					}
+				}, 1200);
+			}
+
+			async function iniciarDuplicados(forzar = false) {
+				if (mensajeDuplicados) mensajeDuplicados.textContent = forzar ? 'Preparando recálculo...' : 'Preparando índice local...';
+				try {
+					const datos = await solicitarDuplicados('iniciar', { forzar });
+					if (pintarEstadoDuplicados(datos)) {
+						programarMonitoreoDuplicados();
+					}
+				} catch (err) {
+					if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo iniciar: ${err.message}`;
+				}
+			}
+
+			botonIniciarDuplicados?.addEventListener('click', () => iniciarDuplicados(false));
+			botonRecalcularDuplicados?.addEventListener('click', () => iniciarDuplicados(true));
+			botonCancelarDuplicados?.addEventListener('click', async () => {
+				try {
+					const datos = await solicitarDuplicados('cancelar');
+					pintarEstadoDuplicados(datos);
+					programarMonitoreoDuplicados();
+				} catch (err) {
+					if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo cancelar: ${err.message}`;
+				}
+			});
+			vistaDuplicados.addEventListener('click', ev => {
+				const botonSeleccion = ev.target.closest?.('[data-duplicado-seleccionar]');
+				if (botonSeleccion && vistaDuplicados.contains(botonSeleccion)) {
+					ev.preventDefault();
+					alternarSeleccionDuplicado(botonSeleccion.closest('[data-duplicado-item]'));
+					return;
+				}
+
+				const botonGrupo = ev.target.closest?.('[data-duplicado-descartar-grupo]');
+				if (botonGrupo && vistaDuplicados.contains(botonGrupo)) {
+					ev.preventDefault();
+					procesarSeleccionGrupoDuplicados(botonGrupo.closest('[data-duplicado-grupo]'), botonGrupo);
+				}
+
+				const item = ev.target.closest?.('[data-duplicado-item]');
+				if (item && vistaDuplicados.contains(item) && !ev.target.closest?.('button, a, input, select, textarea, label')) {
+					ev.preventDefault();
+					mostrarDetalleDuplicado(item);
+				}
+			});
+			vistaDuplicados.addEventListener('keydown', ev => {
+				if (ev.key !== 'Enter' && ev.key !== ' ') return;
+				const item = ev.target.closest?.('[data-duplicado-item]');
+				if (!item || ev.target !== item || !vistaDuplicados.contains(item)) return;
+				ev.preventDefault();
+				mostrarDetalleDuplicado(item);
+			});
+			document.addEventListener('click', ev => {
+				const boton = ev.target.closest?.('[data-duplicado-panel-accion]');
+				if (!boton) return;
+				ev.preventDefault();
+				const datos = boton._duplicadoDatos || (itemDuplicadoActivo ? datosDuplicadoDesdeElemento(itemDuplicadoActivo) : null);
+				if (datos) {
+					procesarDuplicadoInteractivo(datos, boton);
+				}
+			});
+			buscadorDuplicados?.addEventListener('input', actualizarFiltroDuplicados);
+			actualizarFiltroDuplicados();
+			solicitarDuplicados('estado')
+				.then(datos => {
+					if (pintarEstadoDuplicados(datos)) {
+						programarMonitoreoDuplicados();
+					}
+				})
+				.catch(() => {});
+		}
+
+		const buscadorPalabrasClave = document.getElementById('buscador-palabras-clave');
 	const contenedorPalabrasClave = document.getElementById('palabras-clave-contenedor');
 	const resumenPalabrasClave = document.getElementById('palabras-clave-resumen');
 	let enlacesPalabrasClave = Array.from(document.querySelectorAll('.palabra-clave-link'));
