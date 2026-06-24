@@ -7,6 +7,9 @@
  * HTML sin mezclarla con la lectura de parámetros, filtros y paginación.
  */
 
+const ARBOL_DIRECTORIOS_MAX_NODOS = 1800;
+const ARBOL_DIRECTORIOS_PROFUNDIDAD_BASE = 2;
+
 function ordenarArbolDirectorios(array &$nodos): void
 {
 	uksort($nodos, 'strnatcasecmp');
@@ -16,14 +19,44 @@ function ordenarArbolDirectorios(array &$nodos): void
 	unset($nodo);
 }
 
-function renderizarArbolDirectorios(array $nodos, string $rutaActiva): string
+function rutaArbolEsRamaActiva(string $ruta, string $rutaActiva): bool
+{
+	return $rutaActiva !== '' && (
+		$ruta === $rutaActiva
+		|| str_starts_with($rutaActiva . '/', $ruta . '/')
+	);
+}
+
+function renderizarAvisoArbolReducido(): string
+{
+	return '<li class="directorio-item directorio-mas"><span>Entra a esta carpeta para ver más subcarpetas.</span></li>';
+}
+
+function renderizarArbolDirectoriosLimitado(array $nodos, string $rutaActiva, int $profundidad, int &$renderizados, bool &$reducido): string
 {
 	$html = '';
 	foreach ($nodos as $nombre => $nodo):
+		if ($renderizados >= ARBOL_DIRECTORIOS_MAX_NODOS):
+			$reducido = true;
+			break;
+		endif;
+		$renderizados++;
 		$ruta = $nodo['ruta'];
 		$hijos = $nodo['hijos'];
 		$activo = ($rutaActiva !== '' && $ruta === $rutaActiva);
 		$abierto = ($rutaActiva !== '' && str_starts_with($rutaActiva . '/', $ruta . '/'));
+		$enRamaActiva = rutaArbolEsRamaActiva($ruta, $rutaActiva);
+		$mostrarHijos = !empty($hijos) && (
+			$profundidad < ARBOL_DIRECTORIOS_PROFUNDIDAD_BASE
+			|| $enRamaActiva
+		);
+		$hijosHtml = $mostrarHijos
+			? renderizarArbolDirectoriosLimitado($hijos, $rutaActiva, $profundidad + 1, $renderizados, $reducido)
+			: '';
+		$hijosOcultos = !empty($hijos) && !$mostrarHijos;
+		if ($hijosOcultos):
+			$reducido = true;
+		endif;
 		$nombreAttr = escaparHtml($nombre);
 		$rutaAttr = escaparHtml($ruta);
 		$claseBoton = 'directorio-boton' . ($activo ? ' activo' : '');
@@ -38,7 +71,7 @@ function renderizarArbolDirectorios(array $nodos, string $rutaActiva): string
 				'<li class="directorio-item">' .
 				'<details class="directorio-nodo" data-path="' . $rutaAttr . '" data-name="' . $nombreAttr . '" data-open-default="' . ($abierto ? '1' : '0') . '"' . ($abierto ? ' open' : '') . '>' .
 				'<summary>' . $boton . '</summary>' .
-				'<ul>' . renderizarArbolDirectorios($hijos, $rutaActiva) . '</ul>' .
+				'<ul>' . $hijosHtml . ($hijosOcultos ? renderizarAvisoArbolReducido() : '') . '</ul>' .
 				'</details>' .
 				'</li>';
 		else:
@@ -50,6 +83,13 @@ function renderizarArbolDirectorios(array $nodos, string $rutaActiva): string
 	endforeach;
 
 	return $html;
+}
+
+function renderizarArbolDirectorios(array $nodos, string $rutaActiva): string
+{
+	$renderizados = 0;
+	$reducido = false;
+	return renderizarArbolDirectoriosLimitado($nodos, $rutaActiva, 0, $renderizados, $reducido);
 }
 
 function construirArbolDirectorios(array $rutas, string $rutaActiva): string
@@ -81,7 +121,14 @@ function construirArbolDirectorios(array $rutas, string $rutaActiva): string
 		return '<p class="arbol-vacio">No hay carpetas.</p>';
 	endif;
 
-	return '<ul class="arbol-directorios">' . renderizarArbolDirectorios($arbol, $rutaActiva) . '</ul>';
+	$renderizados = 0;
+	$reducido = false;
+	$html = renderizarArbolDirectoriosLimitado($arbol, $rutaActiva, 0, $renderizados, $reducido);
+	$aviso = $reducido
+		? '<p class="arbol-aviso">Árbol reducido para mantener la navegación ligera.</p>'
+		: '';
+
+	return $aviso . '<ul class="arbol-directorios">' . $html . '</ul>';
 }
 
 function urlPalabraClave(string $palabra, int $ver, string $media, array $filtros): string
