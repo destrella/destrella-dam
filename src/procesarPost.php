@@ -329,6 +329,18 @@ if (array_key_exists('duplicados_accion', $json)):
 		$errorDuplicados = (string) ($resultadoDuplicados['error'] ?? '');
 	elseif ($accionDuplicados === 'cancelar'):
 		duplicadosCancelarTrabajo();
+	elseif ($accionDuplicados === 'grupos'):
+		$offsetDuplicados = max(0, (int) ($json['offset'] ?? 0));
+		$limiteDuplicados = max(1, min(100, (int) ($json['limit'] ?? DUPLICADOS_GRUPOS_POR_PAGINA)));
+		echo json_encode(
+			duplicadosRespuestaPaginaGruposAjax(
+				duplicadosEstadoPaginaGrupos(['ruta' => rutaRelativaParaParametro($baseDuplicados)], $offsetDuplicados, $limiteDuplicados),
+				$okDuplicados,
+				$errorDuplicados
+			),
+			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+		);
+		exit;
 	elseif ($accionDuplicados !== 'estado'):
 		http_response_code(400);
 		$okDuplicados = false;
@@ -336,7 +348,7 @@ if (array_key_exists('duplicados_accion', $json)):
 	endif;
 
 	echo json_encode(
-		duplicadosRespuestaAjax(duplicadosEstado(['ruta' => rutaRelativaParaParametro($baseDuplicados)]), $okDuplicados, $errorDuplicados),
+		duplicadosRespuestaAjax(duplicadosEstado(['ruta' => rutaRelativaParaParametro($baseDuplicados)], false), $okDuplicados, $errorDuplicados),
 		JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
 	);
 	exit;

@@ -6,6 +6,7 @@ const DUPLICADOS_FIRMA_VERSION = 1;
 const DUPLICADOS_SCORE_MINIMO = 70;
 const DUPLICADOS_BUCKET_PROBABLE_MAX = 250;
 const DUPLICADOS_CANDIDATOS_PROBABLES_MAX = 2000;
+const DUPLICADOS_GRUPOS_POR_PAGINA = 24;
 
 function duplicadosDirectorioDatos(): string
 {
@@ -660,7 +661,20 @@ function duplicadosUrlVistaPrevia(array $item): string
 
 	$tipoVista = duplicadosTipoVistaPrevia($item);
 	if ((string) ($item['origen'] ?? '') === 'local'):
-		return is_file($ruta) && $tipoVista !== '' ? urlVisualizacion($ruta) : '';
+		if (!is_file($ruta) || $tipoVista === ''):
+			return '';
+		endif;
+		if ($tipoVista === 'image' && imagenRequiereTemporalNavegador(pathinfo($ruta, PATHINFO_EXTENSION))):
+			$temporal = generarJPGtemporal($ruta);
+			if ($temporal !== ''):
+				$rutaTemporal = proyectoRaiz() . DIRECTORY_SEPARATOR . $temporal;
+				return is_file($rutaTemporal)
+					? agregarCacheBuster(urlVisualizacion($rutaTemporal), firmaCacheArchivo($rutaTemporal))
+					: urlVisualizacion($rutaTemporal);
+			endif;
+			return '';
+		endif;
+		return urlVisualizacion($ruta);
 	endif;
 	if ((string) ($item['origen'] ?? '') === 'yandex'):
 		return match ($tipoVista) {
@@ -1004,13 +1018,6 @@ function duplicadosAgregarBucket(array &$buckets, string $clave, int $indice): v
 
 function duplicadosBucketsItem(array $item, int $indice, array &$buckets): void
 {
-	foreach (['sha256', 'md5', 'contenido_hash'] as $campo):
-		$valor = strtolower(trim((string) ($item[$campo] ?? '')));
-		if ($valor !== ''):
-			duplicadosAgregarBucket($buckets, $campo . ':' . $valor, $indice);
-		endif;
-	endforeach;
-
 	$perceptual = strtolower(trim((string) ($item['perceptual_hash'] ?? '')));
 	if ($perceptual !== ''):
 		duplicadosAgregarBucket($buckets, 'dhash:' . substr($perceptual, 0, 4), $indice);
@@ -1036,6 +1043,24 @@ function duplicadosBucketsItem(array $item, int $indice, array &$buckets): void
 	if ($tamano > 0):
 		duplicadosAgregarBucket($buckets, 'tamano:' . duplicadosTipoVistaPrevia($item) . ':' . $tamano, $indice);
 	endif;
+}
+
+function duplicadosRegistrarClaveGrupo(string $clave, int $indice, array &$primeros, array &$grupos): void
+{
+	if ($clave === ''):
+		return;
+	endif;
+	if (isset($grupos[$clave])):
+		$grupos[$clave][] = $indice;
+		return;
+	endif;
+	if (isset($primeros[$clave])):
+		$grupos[$clave] = [$primeros[$clave], $indice];
+		unset($primeros[$clave]);
+		return;
+	endif;
+
+	$primeros[$clave] = $indice;
 }
 
 function duplicadosBuscarPadre(array &$padres, int $indice): int
@@ -1172,8 +1197,40 @@ function duplicadosGrupoDesdeIndices(array $items, array $indices, int $score, s
 	];
 }
 
-function duplicadosConstruirGrupos(?string $base = null, int $limite = 200): array
+function duplicadosGruposDesdeDescriptores(array $items, array $descriptores): array
 {
+	$grupos = [];
+	foreach ($descriptores as $descriptor):
+		$grupos[] = duplicadosGrupoDesdeIndices(
+			$items,
+			(array) ($descriptor['indices'] ?? []),
+			(int) ($descriptor['score'] ?? 0),
+			(string) ($descriptor['metodo'] ?? 'Score probable'),
+			(string) ($descriptor['hash'] ?? ''),
+			(array) ($descriptor['razones'] ?? [])
+		);
+	endforeach;
+
+	return $grupos;
+}
+
+function duplicadosPaginaDesdeDescriptores(array $items, array $descriptores, int $limite, int $offset): array
+{
+	duplicadosOrdenarDescriptores($descriptores);
+	if ($limite > 0):
+		$descriptores = array_slice($descriptores, $offset, $limite);
+	elseif ($offset > 0):
+		$descriptores = array_slice($descriptores, $offset);
+	endif;
+
+	return duplicadosGruposDesdeDescriptores($items, $descriptores);
+}
+
+function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int $offset = 0): array
+{
+	$limite = max(0, $limite);
+	$offset = max(0, $offset);
+	$paginaNecesaria = $limite > 0 ? $offset + $limite : PHP_INT_MAX;
 	$items = array_values(array_merge(
 		duplicadosObtenerLocalesIndexados($base),
 		duplicadosObtenerYandexCache()['items']
@@ -1191,6 +1248,8 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200): arr
 	$descriptores = [];
 	$exactos = [];
 	$visuales = [];
+	$primerosExactos = [];
+	$primerosVisuales = [];
 	$exactoPorIndice = [];
 	$visualPorIndice = [];
 	foreach ($items as $indice => $item):
@@ -1199,19 +1258,17 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200): arr
 		$contenido = strtolower(trim((string) ($item['contenido_hash'] ?? '')));
 		if ($sha !== ''):
 			$clave = 'SHA-256 exacto|' . $sha;
-			$exactos[$clave][] = $indice;
-			$exactoPorIndice[$indice] = $clave;
+			duplicadosRegistrarClaveGrupo($clave, $indice, $primerosExactos, $exactos);
 		elseif ($md5 !== ''):
 			$clave = 'MD5 exacto|' . $md5;
-			$exactos[$clave][] = $indice;
-			$exactoPorIndice[$indice] = $clave;
+			duplicadosRegistrarClaveGrupo($clave, $indice, $primerosExactos, $exactos);
 		endif;
 		if ($contenido !== ''):
 			$clave = 'Contenido visual|' . $contenido;
-			$visuales[$clave][] = $indice;
-			$visualPorIndice[$indice] = $clave;
+			duplicadosRegistrarClaveGrupo($clave, $indice, $primerosVisuales, $visuales);
 		endif;
 	endforeach;
+	unset($primerosExactos, $primerosVisuales);
 
 	foreach ($exactos as $clave => $indices):
 		$indices = array_values(array_unique($indices));
@@ -1219,8 +1276,14 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200): arr
 			continue;
 		endif;
 		[$metodo, $hash] = explode('|', $clave, 2);
+		foreach ($indices as $indice):
+			$exactoPorIndice[$indice] = $clave;
+		endforeach;
 		$descriptores[] = duplicadosDescriptorDesdeIndices($items, $indices, 100, $metodo, $hash, [$metodo]);
 	endforeach;
+	if ($limite > 0 && count($descriptores) >= $paginaNecesaria):
+		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset);
+	endif;
 
 	foreach ($visuales as $clave => $indices):
 		$indices = array_values(array_unique($indices));
@@ -1235,13 +1298,20 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200): arr
 		if (count($clavesBinarias) < 2):
 			continue;
 		endif;
+		foreach ($indices as $indice):
+			$visualPorIndice[$indice] = $clave;
+		endforeach;
 		$descriptores[] = duplicadosDescriptorDesdeIndices($items, $indices, 95, $metodo, $hash, ['Pixeles idénticos sin metadatos']);
 	endforeach;
+	if ($limite > 0 && count($descriptores) >= $paginaNecesaria):
+		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset);
+	endif;
 
 	$probablesPorScore = [];
 	$totalProbables = 0;
 	$paresCandidatos = [];
-	$maxProbables = max(DUPLICADOS_CANDIDATOS_PROBABLES_MAX, $limite * 10);
+	$ventanaBusqueda = $limite > 0 ? $offset + $limite : DUPLICADOS_CANDIDATOS_PROBABLES_MAX;
+	$maxProbables = max(DUPLICADOS_CANDIDATOS_PROBABLES_MAX, $ventanaBusqueda * 10);
 	foreach ($buckets as $claveBucket => $indices):
 		if (
 			str_starts_with($claveBucket, 'sha256:')
@@ -1304,22 +1374,12 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200): arr
 
 	duplicadosOrdenarDescriptores($descriptores);
 	if ($limite > 0):
-		$descriptores = array_slice($descriptores, 0, $limite);
+		$descriptores = array_slice($descriptores, $offset, $limite);
+	elseif ($offset > 0):
+		$descriptores = array_slice($descriptores, $offset);
 	endif;
 
-	$grupos = [];
-	foreach ($descriptores as $descriptor):
-		$grupos[] = duplicadosGrupoDesdeIndices(
-			$items,
-			(array) ($descriptor['indices'] ?? []),
-			(int) ($descriptor['score'] ?? 0),
-			(string) ($descriptor['metodo'] ?? 'Score probable'),
-			(string) ($descriptor['hash'] ?? ''),
-			(array) ($descriptor['razones'] ?? [])
-		);
-	endforeach;
-
-	return $grupos;
+	return duplicadosGruposDesdeDescriptores($items, $descriptores);
 }
 
 function duplicadosResumenGrupos(array $grupos): array
@@ -1353,6 +1413,20 @@ function duplicadosResumenGrupos(array $grupos): array
 	endforeach;
 
 	return $resumen;
+}
+
+function duplicadosResumenVacio(bool $pendiente = false): array
+{
+	return [
+		'grupos' => 0,
+		'entradas' => 0,
+		'cruzados' => 0,
+		'exactos' => 0,
+		'probables' => 0,
+		'locales' => 0,
+		'yandex' => 0,
+		'pendiente' => $pendiente,
+	];
 }
 
 function duplicadosLeerJson(string $archivo): ?array
@@ -1708,12 +1782,12 @@ function duplicadosEjecutarTrabajo(string $id): void
 	fclose($lock);
 }
 
-function duplicadosEstado(array $fuente = []): array
+function duplicadosEstado(array $fuente = [], bool $incluirGrupos = false): array
 {
 	$base = duplicadosResolverBaseLocal($fuente['ruta'] ?? ($_GET['ruta'] ?? ''));
 	$yandex = duplicadosObtenerYandexCache();
 	$local = duplicadosResumenLocal($base);
-	$grupos = duplicadosConstruirGrupos($base);
+	$grupos = $incluirGrupos ? duplicadosConstruirGrupos($base) : [];
 	$trabajo = duplicadosLeerTrabajoActual();
 
 	return [
@@ -1725,14 +1799,40 @@ function duplicadosEstado(array $fuente = []): array
 		],
 		'local' => $local,
 		'grupos' => $grupos,
-		'resumen' => duplicadosResumenGrupos($grupos),
+		'resumen' => $incluirGrupos ? duplicadosResumenGrupos($grupos) : duplicadosResumenVacio(true),
 		'job' => $trabajo,
 	];
 }
 
-function duplicadosRespuestaAjax(array $estado, bool $ok = true, string $error = ''): array
+function duplicadosEstadoPaginaGrupos(array $fuente = [], int $offset = 0, int $limite = DUPLICADOS_GRUPOS_POR_PAGINA): array
 {
+	$limite = max(1, min(100, $limite));
+	$offset = max(0, $offset);
+	$estado = duplicadosEstado($fuente, false);
+	$grupos = duplicadosConstruirGrupos((string) ($estado['base'] ?? ''), $limite + 1, $offset);
+	$hayMas = count($grupos) > $limite;
+	if ($hayMas):
+		$grupos = array_slice($grupos, 0, $limite);
+	endif;
+	$conteo = count($grupos);
+
 	return [
+		'estado' => $estado,
+		'grupos' => $grupos,
+		'resumen' => duplicadosResumenGrupos($grupos),
+		'paginacion' => [
+			'offset' => $offset,
+			'limit' => $limite,
+			'conteo' => $conteo,
+			'next_offset' => $offset + $conteo,
+			'hay_mas' => $hayMas,
+		],
+	];
+}
+
+function duplicadosRespuestaAjax(array $estado, bool $ok = true, string $error = '', bool $incluirResultados = false): array
+{
+	$respuesta = [
 		'ok' => $ok,
 		'error' => $error,
 		'estado' => [
@@ -1743,8 +1843,31 @@ function duplicadosRespuestaAjax(array $estado, bool $ok = true, string $error =
 			'resumen' => $estado['resumen'],
 			'job' => $estado['job'],
 		],
-		'html_resultados' => renderizarResultadosDuplicados($estado),
 	];
+	if ($incluirResultados):
+		$respuesta['html_resultados'] = renderizarResultadosDuplicados($estado);
+	endif;
+
+	return $respuesta;
+}
+
+function duplicadosRespuestaPaginaGruposAjax(array $pagina, bool $ok = true, string $error = ''): array
+{
+	$estado = is_array($pagina['estado'] ?? null) ? $pagina['estado'] : duplicadosEstado([], false);
+	return array_merge(
+		duplicadosRespuestaAjax($estado, $ok, $error, false),
+		[
+			'html_grupos' => renderizarGruposDuplicados(is_array($pagina['grupos'] ?? null) ? $pagina['grupos'] : []),
+			'resumen_pagina' => is_array($pagina['resumen'] ?? null) ? $pagina['resumen'] : duplicadosResumenVacio(false),
+			'paginacion' => is_array($pagina['paginacion'] ?? null) ? $pagina['paginacion'] : [
+				'offset' => 0,
+				'limit' => DUPLICADOS_GRUPOS_POR_PAGINA,
+				'conteo' => 0,
+				'next_offset' => 0,
+				'hay_mas' => false,
+			],
+		]
+	);
 }
 
 function renderizarPanelDuplicados(array $estado): string
@@ -1755,6 +1878,9 @@ function renderizarPanelDuplicados(array $estado): string
 	$local = $estado['local'] ?? [];
 	$yandex = $estado['yandex'] ?? [];
 	$resumen = $estado['resumen'] ?? [];
+	$resumenTexto = !empty($resumen['pendiente'])
+		? 'Grupos: carga asíncrona'
+		: 'Grupos: ' . (int) ($resumen['grupos'] ?? 0) . ' · Exactos: ' . (int) ($resumen['exactos'] ?? 0) . ' · Probables: ' . (int) ($resumen['probables'] ?? 0);
 
 	return
 		'<div class="duplicados-panel">' .
@@ -1762,7 +1888,7 @@ function renderizarPanelDuplicados(array $estado): string
 		'<strong>Duplicados</strong>' .
 		'<span>Local: ' . (int) ($local['vigentes'] ?? 0) . ' con firma</span>' .
 		'<span>Yandex cache: ' . (int) ($yandex['total'] ?? 0) . ' archivos</span>' .
-		'<span>Grupos: ' . (int) ($resumen['grupos'] ?? 0) . ' · Exactos: ' . (int) ($resumen['exactos'] ?? 0) . ' · Probables: ' . (int) ($resumen['probables'] ?? 0) . '</span>' .
+		'<span>' . escaparHtml($resumenTexto) . '</span>' .
 		'</div>' .
 		'<div class="duplicados-panel-estado' . ($activo ? ' activo' : '') . '">' . escaparHtml($mensaje) . '</div>' .
 		'</div>';
@@ -1776,14 +1902,20 @@ function renderizarControlesDuplicados(array $estado): string
 	$yandex = $estado['yandex'] ?? [];
 	$actualizadoLocal = (int) ($local['actualizado'] ?? 0);
 	$actualizadoYandex = (int) ($yandex['actualizado'] ?? 0);
-	$partes = [
-		(int) ($resumen['grupos'] ?? 0) . ' grupos',
-		(int) ($resumen['exactos'] ?? 0) . ' exactos',
-		(int) ($resumen['probables'] ?? 0) . ' probables',
-		(int) ($resumen['cruzados'] ?? 0) . ' local/Yandex',
-		(int) ($local['vigentes'] ?? 0) . ' locales con firma',
-		(int) ($yandex['total'] ?? 0) . ' de Yandex cache',
-	];
+	$partes = !empty($resumen['pendiente'])
+		? [
+			'grupos por cargar',
+			(int) ($local['vigentes'] ?? 0) . ' locales con firma',
+			(int) ($yandex['total'] ?? 0) . ' de Yandex cache',
+		]
+		: [
+			(int) ($resumen['grupos'] ?? 0) . ' grupos',
+			(int) ($resumen['exactos'] ?? 0) . ' exactos',
+			(int) ($resumen['probables'] ?? 0) . ' probables',
+			(int) ($resumen['cruzados'] ?? 0) . ' local/Yandex',
+			(int) ($local['vigentes'] ?? 0) . ' locales con firma',
+			(int) ($yandex['total'] ?? 0) . ' de Yandex cache',
+		];
 	if ($actualizadoLocal > 0):
 		$partes[] = 'Local ' . duplicadosFormatearFecha($actualizadoLocal);
 	endif;
@@ -1813,7 +1945,7 @@ function renderizarVistaDuplicados(array $estado): string
 	$activo = duplicadosTrabajoActivo($job);
 
 	return
-		'<section id="duplicados-vista" class="duplicados-vista" data-duplicados-ruta="' . escaparHtml($baseRel) . '" data-duplicados-base="' . escaparHtml($base) . '">' .
+		'<section id="duplicados-vista" class="duplicados-vista" data-duplicados-ruta="' . escaparHtml($baseRel) . '" data-duplicados-base="' . escaparHtml($base) . '" data-duplicados-page-size="' . DUPLICADOS_GRUPOS_POR_PAGINA . '">' .
 		'<div class="duplicados-herramientas">' .
 		'<div class="duplicados-herramientas-titulo">' .
 		'<h1>Duplicados</h1>' .
@@ -1831,7 +1963,14 @@ function renderizarVistaDuplicados(array $estado): string
 		'</div>' .
 		'<label class="duplicados-buscador-label" for="duplicados-buscador">Filtrar resultados</label>' .
 		'<input type="search" id="duplicados-buscador" class="duplicados-buscador" placeholder="Nombre, ruta, hash o score" autocomplete="off">' .
-		'<div id="duplicados-resultados">' . renderizarResultadosDuplicados($estado) . '</div>' .
+		'<div id="duplicados-resultados" data-duplicados-page-size="' . DUPLICADOS_GRUPOS_POR_PAGINA . '">' .
+			'<div class="duplicados-lista" data-duplicados-lista></div>' .
+			'<div class="duplicados-vacio" role="status">Cargando grupos de duplicados...</div>' .
+		'</div>' .
+		'<div id="duplicados-carga-mas" class="duplicados-carga-mas" role="status" aria-live="polite">' .
+			'<button type="button" data-duplicados-cargar-mas>Cargar más grupos</button>' .
+			'<span data-duplicados-carga-estado>Cargando...</span>' .
+		'</div>' .
 		'</section>';
 }
 
@@ -1842,7 +1981,12 @@ function renderizarResultadosDuplicados(array $estado): string
 		return '<div class="duplicados-vacio" role="status">No hay duplicados exactos ni probables con las firmas disponibles.</div>';
 	endif;
 
-	$html = '<div class="duplicados-lista">';
+	return '<div class="duplicados-lista">' . renderizarGruposDuplicados($grupos) . '</div>';
+}
+
+function renderizarGruposDuplicados(array $grupos): string
+{
+	$html = '';
 	foreach ($grupos as $indice => $grupo):
 		$items = is_array($grupo['items'] ?? null) ? $grupo['items'] : [];
 		$tipo = (string) ($grupo['tipo'] ?? '');
@@ -1906,7 +2050,6 @@ function renderizarResultadosDuplicados(array $estado): string
 		endforeach;
 		$html .= '</div></details>';
 	endforeach;
-	$html .= '</div>';
 
 	return $html;
 }

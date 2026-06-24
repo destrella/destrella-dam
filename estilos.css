@@ -2981,7 +2981,8 @@ button.abrir-lightbox:active {
 	.duplicados-item-acciones button,
 	.duplicados-grupo-acciones button,
 	.duplicados-detalle-acciones a,
-	.duplicados-detalle-acciones button {
+	.duplicados-detalle-acciones button,
+	.duplicados-carga-mas button {
 		min-height: 2rem;
 		padding: 0.35rem 0.65rem;
 		border: 1px solid var(--border-color);
@@ -3008,7 +3009,9 @@ button.abrir-lightbox:active {
 	.duplicados-detalle-acciones a:hover,
 	.duplicados-detalle-acciones a:focus-visible,
 	.duplicados-detalle-acciones button:hover,
-	.duplicados-detalle-acciones button:focus-visible {
+	.duplicados-detalle-acciones button:focus-visible,
+	.duplicados-carga-mas button:hover,
+	.duplicados-carga-mas button:focus-visible {
 		border-color: var(--accent-primary);
 		color: var(--accent-secondary);
 	}
@@ -3016,7 +3019,8 @@ button.abrir-lightbox:active {
 	.duplicados-acciones button:disabled,
 	.duplicados-item-acciones button:disabled,
 	.duplicados-grupo-acciones button:disabled,
-	.duplicados-detalle-acciones button:disabled {
+	.duplicados-detalle-acciones button:disabled,
+	.duplicados-carga-mas button:disabled {
 		cursor: wait;
 		opacity: 0.55;
 	}
@@ -3049,6 +3053,21 @@ button.abrir-lightbox:active {
 		display: grid;
 		gap: 0.7rem;
 		width: 100%;
+	}
+
+	.duplicados-carga-mas {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: center;
+		gap: 0.55rem;
+		min-height: 2.5rem;
+		color: var(--grey-text);
+		font-size: 0.78rem;
+	}
+
+	.duplicados-carga-mas[hidden] {
+		display: none !important;
 	}
 
 	.duplicados-vacio {
@@ -3260,8 +3279,9 @@ button.abrir-lightbox:active {
 	.duplicados-preview-media {
 		display: grid;
 		place-items: center;
-		height: clamp(12rem, 48vh, 34rem);
-		min-height: 12rem;
+		width: 100%;
+		aspect-ratio: var(--duplicado-aspecto, 4 / 3);
+		min-height: 0;
 		margin: 0;
 		border: 1px solid var(--border-color);
 		border-radius: 4px;
@@ -3269,12 +3289,21 @@ button.abrir-lightbox:active {
 		overflow: hidden;
 	}
 
+	.duplicados-preview-media[data-duplicado-preview-lightbox] {
+		cursor: zoom-in;
+	}
+
+	.duplicados-preview-media[data-duplicado-preview-lightbox]:focus-visible {
+		outline: 2px solid var(--accent-primary);
+		outline-offset: 2px;
+	}
+
 	.duplicados-preview-media a,
 	.duplicados-preview-media img,
 	.duplicados-preview-media video {
 		display: block;
-		width: auto;
-		height: auto;
+		width: 100%;
+		height: 100%;
 		max-width: 100%;
 	}
 
@@ -3287,6 +3316,7 @@ button.abrir-lightbox:active {
 
 	.duplicados-preview-media img,
 	.duplicados-preview-media video {
+		max-width: 100%;
 		max-height: 100%;
 		object-fit: contain;
 	}

@@ -881,11 +881,85 @@ document.addEventListener('DOMContentLoaded', function () {
 			const mensajeDuplicados = document.getElementById('duplicados-mensaje');
 			const resultadosDuplicados = document.getElementById('duplicados-resultados');
 			const buscadorDuplicados = document.getElementById('duplicados-buscador');
+			const cargaMasDuplicados = document.getElementById('duplicados-carga-mas');
+			const botonCargarMasDuplicados = cargaMasDuplicados?.querySelector('[data-duplicados-cargar-mas]');
+			const estadoCargaMasDuplicados = cargaMasDuplicados?.querySelector('[data-duplicados-carga-estado]');
+			const limitePaginaDuplicados = Math.max(1, Number(resultadosDuplicados?.dataset.duplicadosPageSize || vistaDuplicados.dataset.duplicadosPageSize || 24));
 			let temporizadorDuplicados = null;
 			let itemDuplicadoActivo = null;
+			let offsetDuplicados = 0;
+			let hayMasDuplicados = true;
+			let cargandoGruposDuplicados = false;
+			let trabajoDuplicadosActivoAnterior = false;
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
+			}
+
+			function asegurarListaDuplicados() {
+				if (!resultadosDuplicados) return null;
+				let lista = resultadosDuplicados.querySelector('[data-duplicados-lista]');
+				if (!lista) {
+					lista = document.createElement('div');
+					lista.className = 'duplicados-lista';
+					lista.dataset.duplicadosLista = '1';
+					resultadosDuplicados.prepend(lista);
+				}
+				return lista;
+			}
+
+			function mostrarMensajeListaDuplicados(mensaje) {
+				if (!resultadosDuplicados) return;
+				resultadosDuplicados.querySelectorAll('.duplicados-vacio').forEach(nodo => nodo.remove());
+				const vacio = document.createElement('div');
+				vacio.className = 'duplicados-vacio';
+				vacio.setAttribute('role', 'status');
+				vacio.textContent = mensaje;
+				resultadosDuplicados.appendChild(vacio);
+			}
+
+			function quitarMensajeListaDuplicados() {
+				resultadosDuplicados?.querySelectorAll('.duplicados-vacio').forEach(nodo => nodo.remove());
+			}
+
+			function totalGruposDuplicadosCargados() {
+				return resultadosDuplicados?.querySelectorAll('[data-duplicado-grupo]').length || 0;
+			}
+
+			function sincronizarOffsetDuplicadosConDom() {
+				offsetDuplicados = totalGruposDuplicadosCargados();
+			}
+
+			function actualizarCargaMasDuplicados(mensaje = '') {
+				if (!cargaMasDuplicados) return;
+				const hayGrupos = totalGruposDuplicadosCargados() > 0;
+				cargaMasDuplicados.hidden = !cargandoGruposDuplicados && !hayMasDuplicados && !hayGrupos;
+				if (botonCargarMasDuplicados) {
+					botonCargarMasDuplicados.hidden = !hayMasDuplicados || cargandoGruposDuplicados;
+					botonCargarMasDuplicados.disabled = cargandoGruposDuplicados || !hayMasDuplicados;
+				}
+				if (estadoCargaMasDuplicados) {
+					if (mensaje) {
+						estadoCargaMasDuplicados.textContent = mensaje;
+					} else if (cargandoGruposDuplicados) {
+						estadoCargaMasDuplicados.textContent = 'Cargando grupos...';
+					} else if (hayMasDuplicados) {
+						estadoCargaMasDuplicados.textContent = 'Desplázate para cargar más grupos.';
+					} else if (hayGrupos) {
+						estadoCargaMasDuplicados.textContent = 'Todos los grupos cargados.';
+					} else {
+						estadoCargaMasDuplicados.textContent = '';
+					}
+				}
+			}
+
+			function reiniciarListaDuplicados(mensaje = 'Cargando grupos de duplicados...') {
+				if (!resultadosDuplicados) return;
+				offsetDuplicados = 0;
+				hayMasDuplicados = true;
+				resultadosDuplicados.innerHTML = '<div class="duplicados-lista" data-duplicados-lista></div>';
+				mostrarMensajeListaDuplicados(mensaje);
+				actualizarCargaMasDuplicados('Cargando grupos...');
 			}
 
 			function datosDuplicadoDesdeElemento(elemento) {
@@ -928,19 +1002,95 @@ document.addEventListener('DOMContentLoaded', function () {
 				return `<dt>${escaparHtmlCliente(etiqueta)}</dt><dd>${escaparHtmlCliente(valor)}</dd>`;
 			}
 
+			function dimensionesDuplicadoDesdeTexto(valor) {
+				const match = String(valor || '').match(/(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)/i);
+				if (!match) return null;
+				const ancho = Number(match[1].replace(',', '.'));
+				const alto = Number(match[2].replace(',', '.'));
+				if (!Number.isFinite(ancho) || !Number.isFinite(alto) || ancho <= 0 || alto <= 0) return null;
+				return {
+					ancho: Math.round(ancho),
+					alto: Math.round(alto)
+				};
+			}
+
+			function estiloAspectoDuplicado(datos) {
+				const dimensiones = dimensionesDuplicadoDesdeTexto(datos.dimensiones);
+				if (!dimensiones) return '';
+				return ` style="--duplicado-aspecto:${dimensiones.ancho} / ${dimensiones.alto}"`;
+			}
+
+			function aplicarAspectoPreviewDuplicado(panel) {
+				const contenedor = panel?.querySelector('.duplicados-preview-media');
+				const media = contenedor?.querySelector('img, video');
+				if (!contenedor || !media) return;
+
+				function aplicar(ancho, alto) {
+					if (!Number.isFinite(ancho) || !Number.isFinite(alto) || ancho <= 0 || alto <= 0) return;
+					contenedor.style.setProperty('--duplicado-aspecto', `${Math.round(ancho)} / ${Math.round(alto)}`);
+				}
+
+				if (media.tagName === 'IMG') {
+					if (media.naturalWidth && media.naturalHeight) {
+						aplicar(media.naturalWidth, media.naturalHeight);
+					} else {
+						media.addEventListener('load', () => aplicar(media.naturalWidth, media.naturalHeight), { once: true });
+					}
+					return;
+				}
+
+				if (media.tagName === 'VIDEO') {
+					if (media.videoWidth && media.videoHeight) {
+						aplicar(media.videoWidth, media.videoHeight);
+					} else {
+						media.addEventListener('loadedmetadata', () => aplicar(media.videoWidth, media.videoHeight), { once: true });
+					}
+				}
+			}
+
+			function elementosLightboxGrupoDuplicado(itemActivo) {
+				const grupo = itemActivo?.closest?.('[data-duplicado-grupo]');
+				const items = Array.from(grupo?.querySelectorAll('[data-duplicado-item]') || []);
+				return items
+					.map((item, index) => {
+						const datos = datosDuplicadoDesdeElemento(item);
+						const href = datos.media || datos.preview || '';
+						if (!href || !['image', 'video'].includes(datos.kind)) return null;
+						return {
+							href,
+							type: datos.kind,
+							title: datos.nombre,
+							source: item,
+							index
+						};
+					})
+					.filter(Boolean);
+			}
+
+			function indiceLightboxGrupoDuplicado(lista, itemActivo) {
+				const indice = lista.findIndex(entrada => entrada.source === itemActivo);
+				return indice >= 0 ? indice : 0;
+			}
+
+			function abrirLightboxDuplicado(itemActivo) {
+				if (!itemActivo || typeof window.abrirLightboxPersonalizado !== 'function') return;
+				const lista = elementosLightboxGrupoDuplicado(itemActivo);
+				if (!lista.length) return;
+				window.abrirLightboxPersonalizado(lista, indiceLightboxGrupoDuplicado(lista, itemActivo));
+			}
+
 			function htmlVistaPreviaDuplicado(datos) {
 				const src = datos.preview || datos.media || '';
 				const media = datos.media || src;
+				const estiloAspecto = estiloAspectoDuplicado(datos);
 				if (datos.kind === 'image' && src) {
-					return '<figure class="duplicados-preview-media">' +
-						`<a href="${escaparHtmlCliente(media)}" target="_blank" rel="noopener noreferrer">` +
+					return `<figure class="duplicados-preview-media" data-duplicado-preview-lightbox tabindex="0" role="button" aria-label="Abrir ${escaparHtmlCliente(datos.nombre)} en lightbox"${estiloAspecto}>` +
 						`<img src="${escaparHtmlCliente(src)}" alt="${escaparHtmlCliente(datos.nombre)}" loading="lazy">` +
-						'</a>' +
 						'</figure>';
 				}
 				if (datos.kind === 'video' && src) {
-					return '<figure class="duplicados-preview-media">' +
-						`<video src="${escaparHtmlCliente(src)}" controls preload="metadata"></video>` +
+					return `<figure class="duplicados-preview-media" data-duplicado-preview-lightbox tabindex="0" role="button" aria-label="Abrir ${escaparHtmlCliente(datos.nombre)} en lightbox"${estiloAspecto}>` +
+						`<video src="${escaparHtmlCliente(src)}" muted playsinline preload="metadata"></video>` +
 						'</figure>';
 				}
 
@@ -964,6 +1114,35 @@ document.addEventListener('DOMContentLoaded', function () {
 				if (!estado) return;
 				estado.classList.toggle('error', error);
 				estado.textContent = mensaje;
+			}
+
+			function actualizarTituloGrupoDuplicados(grupo) {
+				if (!grupo) return;
+				const titulo = grupo.querySelector('.duplicados-grupo-titulo');
+				const items = grupo.querySelectorAll('[data-duplicado-item]');
+				if (!titulo) return;
+				const cruzado = titulo.textContent.includes('Local/Yandex');
+				titulo.textContent = `${items.length} archivos${cruzado ? ' · Local/Yandex' : ''}`;
+			}
+
+			function eliminarItemDuplicadoDeVista(item) {
+				if (!item) return;
+				const grupo = item.closest('[data-duplicado-grupo]');
+				item.remove();
+				if (grupo) {
+					const restantes = grupo.querySelectorAll('[data-duplicado-item]');
+					if (restantes.length < 2) {
+						grupo.remove();
+					} else {
+						actualizarTituloGrupoDuplicados(grupo);
+						actualizarSeleccionGrupoDuplicados(grupo);
+					}
+				}
+				sincronizarOffsetDuplicadosConDom();
+				if (!totalGruposDuplicadosCargados() && !hayMasDuplicados) {
+					mostrarMensajeListaDuplicados('No hay duplicados exactos ni probables con las firmas disponibles.');
+				}
+				actualizarCargaMasDuplicados();
 			}
 
 			function mostrarDetalleDuplicado(item) {
@@ -1011,6 +1190,16 @@ document.addEventListener('DOMContentLoaded', function () {
 				const botonAccion = panel.querySelector('[data-duplicado-panel-accion]');
 				if (botonAccion) {
 					botonAccion._duplicadoDatos = datos;
+				}
+				aplicarAspectoPreviewDuplicado(panel);
+				const previewLightbox = panel.querySelector('[data-duplicado-preview-lightbox]');
+				if (previewLightbox) {
+					previewLightbox.addEventListener('click', () => abrirLightboxDuplicado(item));
+					previewLightbox.addEventListener('keydown', (ev) => {
+						if (ev.key !== 'Enter' && ev.key !== ' ') return;
+						ev.preventDefault();
+						abrirLightboxDuplicado(item);
+					});
 				}
 			}
 
@@ -1077,9 +1266,14 @@ document.addEventListener('DOMContentLoaded', function () {
 				return confirm(`${accion}?\n${datos.ruta}`);
 			}
 
-			async function refrescarDuplicadosTrasAccion(mensaje) {
-				const datos = await solicitarDuplicados('estado');
-				pintarEstadoDuplicados(datos);
+			async function refrescarDuplicadosTrasAccion(mensaje, item = itemDuplicadoActivo) {
+				eliminarItemDuplicadoDeVista(item);
+				try {
+					const datos = await solicitarDuplicados('estado');
+					pintarEstadoDuplicados(datos);
+				} catch (err) {
+					if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo actualizar el estado: ${err.message}`;
+				}
 				mostrarResultadoAccionDuplicado(mensaje);
 			}
 
@@ -1094,7 +1288,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 				try {
 					await ejecutarAccionDuplicado(datos);
-					await refrescarDuplicadosTrasAccion(`${datos.actionLabel}: ${datos.ruta}`);
+					await refrescarDuplicadosTrasAccion(`${datos.actionLabel}: ${datos.ruta}`, itemDuplicadoActivo);
 				} catch (err) {
 					mostrarEstadoDetalleDuplicado(err.message || 'No se pudo procesar el archivo.', true);
 					if (boton) {
@@ -1134,6 +1328,9 @@ document.addEventListener('DOMContentLoaded', function () {
 					}
 				}
 
+				items
+					.filter(item => item.classList.contains('procesado'))
+					.forEach(item => eliminarItemDuplicadoDeVista(item));
 				try {
 					const datos = await solicitarDuplicados('estado');
 					pintarEstadoDuplicados(datos);
@@ -1162,6 +1359,56 @@ document.addEventListener('DOMContentLoaded', function () {
 				});
 			}
 
+			async function cargarGruposDuplicados(opciones = {}) {
+				if (!resultadosDuplicados || cargandoGruposDuplicados) return;
+				const reiniciar = Boolean(opciones.reiniciar);
+				if (reiniciar) {
+					reiniciarListaDuplicados();
+				}
+				if (!hayMasDuplicados) {
+					actualizarCargaMasDuplicados();
+					return;
+				}
+
+				cargandoGruposDuplicados = true;
+				actualizarCargaMasDuplicados('Cargando grupos...');
+				try {
+					const datos = await solicitarDuplicados('grupos', {
+						offset: offsetDuplicados,
+						limit: limitePaginaDuplicados
+					});
+					const lista = asegurarListaDuplicados();
+					const html = typeof datos?.html_grupos === 'string' ? datos.html_grupos : '';
+					if (lista && html.trim() !== '') {
+						lista.insertAdjacentHTML('beforeend', html);
+						quitarMensajeListaDuplicados();
+					}
+
+					const paginacion = datos?.paginacion || {};
+					const conteo = Number(paginacion.conteo || 0);
+					offsetDuplicados = Number(paginacion.next_offset ?? (offsetDuplicados + conteo));
+					hayMasDuplicados = Boolean(paginacion.hay_mas);
+					if (datos?.estado) {
+						pintarEstadoDuplicados(datos);
+					}
+					if (!totalGruposDuplicadosCargados() && !hayMasDuplicados) {
+						mostrarMensajeListaDuplicados('No hay duplicados exactos ni probables con las firmas disponibles.');
+					}
+					actualizarFiltroDuplicados();
+				} catch (err) {
+					mostrarMensajeListaDuplicados(`No se pudieron cargar los grupos: ${err.message}`);
+				} finally {
+					cargandoGruposDuplicados = false;
+					actualizarCargaMasDuplicados();
+					if (mensajeDuplicados && !trabajoDuplicadosActivoAnterior) {
+						const cargados = totalGruposDuplicadosCargados();
+						mensajeDuplicados.textContent = hayMasDuplicados
+							? `${cargados} grupos cargados.`
+							: `${cargados} grupos cargados. Lista completa.`;
+					}
+				}
+			}
+
 			function pintarEstadoDuplicados(datos) {
 				const estado = datos?.estado || {};
 				const job = estado.job || null;
@@ -1181,7 +1428,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 				if (mensajeDuplicados) {
 					const resumen = estado.resumen || {};
-					const mensaje = job?.mensaje || `${Number(resumen.grupos || 0)} grupos encontrados.`;
+					const mensaje = job?.mensaje || (resumen.pendiente ? 'Grupos listos para cargar por tandas.' : `${Number(resumen.grupos || 0)} grupos encontrados.`);
 					mensajeDuplicados.textContent = datos?.error || mensaje;
 				}
 				if (resultadosDuplicados && typeof datos?.html_resultados === 'string') {
@@ -1215,8 +1462,16 @@ document.addEventListener('DOMContentLoaded', function () {
 				temporizadorDuplicados = window.setTimeout(async () => {
 					try {
 						const datos = await solicitarDuplicados('estado');
-						if (pintarEstadoDuplicados(datos)) {
+						const estabaActivo = trabajoDuplicadosActivoAnterior;
+						const activo = pintarEstadoDuplicados(datos);
+						if (activo) {
+							trabajoDuplicadosActivoAnterior = true;
 							programarMonitoreoDuplicados();
+						} else {
+							trabajoDuplicadosActivoAnterior = false;
+							if (estabaActivo) {
+								cargarGruposDuplicados({ reiniciar: true });
+							}
 						}
 					} catch (err) {
 						if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo leer el progreso: ${err.message}`;
@@ -1224,11 +1479,44 @@ document.addEventListener('DOMContentLoaded', function () {
 				}, 1200);
 			}
 
+			function inicializarCargaPorScrollDuplicados() {
+				if (!cargaMasDuplicados) return;
+				let contenedorScroll = cargaMasDuplicados.parentElement;
+				while (contenedorScroll && contenedorScroll !== document.body) {
+					const estilos = window.getComputedStyle(contenedorScroll);
+					if (/(auto|scroll)/.test(estilos.overflowY) && contenedorScroll.scrollHeight > contenedorScroll.clientHeight) {
+						break;
+					}
+					contenedorScroll = contenedorScroll.parentElement;
+				}
+				if (contenedorScroll === document.body) {
+					contenedorScroll = null;
+				}
+				if ('IntersectionObserver' in window) {
+					const observador = new IntersectionObserver(entradas => {
+						if (entradas.some(entrada => entrada.isIntersecting)) {
+							cargarGruposDuplicados();
+						}
+					}, { root: contenedorScroll || null, rootMargin: '360px 0px' });
+					observador.observe(cargaMasDuplicados);
+				}
+				if (contenedorScroll) {
+					contenedorScroll.addEventListener('scroll', () => {
+						const distanciaFondo = contenedorScroll.scrollHeight - contenedorScroll.scrollTop - contenedorScroll.clientHeight;
+						if (distanciaFondo < 700) {
+							cargarGruposDuplicados();
+						}
+					}, { passive: true });
+				}
+			}
+
 			async function iniciarDuplicados(forzar = false) {
 				if (mensajeDuplicados) mensajeDuplicados.textContent = forzar ? 'Preparando recálculo...' : 'Preparando índice local...';
 				try {
 					const datos = await solicitarDuplicados('iniciar', { forzar });
-					if (pintarEstadoDuplicados(datos)) {
+					const activo = pintarEstadoDuplicados(datos);
+					trabajoDuplicadosActivoAnterior = activo;
+					if (activo) {
 						programarMonitoreoDuplicados();
 					}
 				} catch (err) {
@@ -1241,12 +1529,13 @@ document.addEventListener('DOMContentLoaded', function () {
 			botonCancelarDuplicados?.addEventListener('click', async () => {
 				try {
 					const datos = await solicitarDuplicados('cancelar');
-					pintarEstadoDuplicados(datos);
+					trabajoDuplicadosActivoAnterior = pintarEstadoDuplicados(datos);
 					programarMonitoreoDuplicados();
 				} catch (err) {
 					if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo cancelar: ${err.message}`;
 				}
 			});
+			botonCargarMasDuplicados?.addEventListener('click', () => cargarGruposDuplicados());
 			vistaDuplicados.addEventListener('click', ev => {
 				const botonSeleccion = ev.target.closest?.('[data-duplicado-seleccionar]');
 				if (botonSeleccion && vistaDuplicados.contains(botonSeleccion)) {
@@ -1285,13 +1574,20 @@ document.addEventListener('DOMContentLoaded', function () {
 			});
 			buscadorDuplicados?.addEventListener('input', actualizarFiltroDuplicados);
 			actualizarFiltroDuplicados();
+			actualizarCargaMasDuplicados('Cargando grupos...');
 			solicitarDuplicados('estado')
 				.then(datos => {
-					if (pintarEstadoDuplicados(datos)) {
+					const activo = pintarEstadoDuplicados(datos);
+					trabajoDuplicadosActivoAnterior = activo;
+					if (activo) {
 						programarMonitoreoDuplicados();
 					}
 				})
-				.catch(() => {});
+				.catch(() => {})
+				.finally(async () => {
+					await cargarGruposDuplicados({ reiniciar: true });
+					inicializarCargaPorScrollDuplicados();
+				});
 		}
 
 		const buscadorPalabrasClave = document.getElementById('buscador-palabras-clave');
@@ -2452,10 +2748,16 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 
 // Simple lightbox for dedicated media buttons.
-document.addEventListener('DOMContentLoaded', function () {
+function inicializarLightboxGlobal() {
+	if (window.__damLightboxInicializado) return;
+	window.__damLightboxInicializado = true;
 	let lightboxIndex = -1;
+	let lightboxListaPersonalizada = null;
 
 	function obtenerDisparadoresLightbox() {
+		if (Array.isArray(lightboxListaPersonalizada)) {
+			return lightboxListaPersonalizada;
+		}
 		return Array.from(document.querySelectorAll('main .abrir-lightbox'));
 	}
 
@@ -2552,8 +2854,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
 		if (type === 'video') {
 			const video = document.createElement('video');
+			video.autoplay = true;
 			video.controls = true;
 			video.loop = true;
+			video.muted = true;
+			video.playsInline = true;
 			video.src = href;
 			video.className = 'lightbox-media';
 			frame.appendChild(video);
@@ -2729,6 +3034,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		const content = document.getElementById('lightbox-content');
 		if (content) content.innerHTML = '';
 		lightboxIndex = -1;
+		lightboxListaPersonalizada = null;
 	}
 
 	function resolverTipoLightbox(href, tipoDeclarado) {
@@ -2742,14 +3048,18 @@ document.addEventListener('DOMContentLoaded', function () {
 	}
 
 	function abrirDesdeDisparador(disparador) {
-		const href = disparador.dataset.lightboxHref || disparador.href;
+		const dataset = disparador?.dataset || {};
+		const href = dataset.lightboxHref || disparador?.href || disparador?.href || '';
 		if (!href) return;
 
 		const disparadores = obtenerDisparadoresLightbox();
 		const index = disparadores.indexOf(disparador);
-		const tipoDeclarado = disparador.dataset.lightboxTipo || disparador.dataset.tipo;
+		const tipoDeclarado = dataset.lightboxTipo || dataset.tipo || disparador?.type;
 		const tipo = resolverTipoLightbox(href, tipoDeclarado);
-		openLightbox(href, tipo, index, disparador);
+		const disparadorCapas = disparador instanceof Element
+			? disparador
+			: (disparador?.source instanceof Element ? disparador.source : null);
+		openLightbox(href, tipo, index, disparadorCapas);
 	}
 
 	function actualizarControlesLightbox() {
@@ -2761,8 +3071,9 @@ document.addEventListener('DOMContentLoaded', function () {
 		const prevBtn = overlay.querySelector('#lightbox-prev');
 		const nextBtn = overlay.querySelector('#lightbox-next');
 		const estado = overlay.querySelector('#lightbox-status');
-		const hayAnteriorPagina = Boolean(document.querySelector('a[title="Anterior"]'));
-		const haySiguientePagina = Boolean(document.querySelector('a[title="Siguiente"]'));
+		const usaListaPersonalizada = Array.isArray(lightboxListaPersonalizada);
+		const hayAnteriorPagina = !usaListaPersonalizada && Boolean(document.querySelector('a[title="Anterior"]'));
+		const haySiguientePagina = !usaListaPersonalizada && Boolean(document.querySelector('a[title="Siguiente"]'));
 
 		if (prevBtn) {
 			prevBtn.disabled = !(lightboxIndex > 0 || hayAnteriorPagina);
@@ -2786,6 +3097,9 @@ document.addEventListener('DOMContentLoaded', function () {
 		const nuevoIndex = lightboxIndex + direccion;
 		if (nuevoIndex >= 0 && nuevoIndex < disparadores.length) {
 			abrirDesdeDisparador(disparadores[nuevoIndex]);
+			return;
+		}
+		if (Array.isArray(lightboxListaPersonalizada)) {
 			return;
 		}
 
@@ -2812,6 +3126,21 @@ document.addEventListener('DOMContentLoaded', function () {
 			abrirDesdeDisparador(disparador);
 	}, true);
 
+	window.abrirLightboxPersonalizado = function (elementos, indiceInicial = 0) {
+		if (!Array.isArray(elementos) || !elementos.length) return;
+		lightboxListaPersonalizada = elementos
+			.map(elemento => ({
+				href: elemento.href || '',
+				type: elemento.type || elemento.tipo || '',
+				source: elemento.source || null,
+				title: elemento.title || ''
+			}))
+			.filter(elemento => elemento.href !== '');
+		if (!lightboxListaPersonalizada.length) return;
+		const indice = Math.max(0, Math.min(Number(indiceInicial) || 0, lightboxListaPersonalizada.length - 1));
+		abrirDesdeDisparador(lightboxListaPersonalizada[indice]);
+	};
+
 	try {
 		const disparadores = obtenerDisparadoresLightbox();
 		const autoOpen = sessionStorage.getItem('damLightboxAutoOpen');
@@ -2826,7 +3155,13 @@ document.addEventListener('DOMContentLoaded', function () {
 		// Sin sessionStorage, la paginación sigue funcionando sin reapertura automática.
 	}
 
-});
+}
+
+if (document.readyState === 'loading') {
+	document.addEventListener('DOMContentLoaded', inicializarLightboxGlobal);
+} else {
+	inicializarLightboxGlobal();
+}
 
 
 // Navegación por teclado
