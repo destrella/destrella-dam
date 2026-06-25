@@ -896,10 +896,19 @@ document.addEventListener('DOMContentLoaded', function () {
 			const botonIniciarDuplicados = document.getElementById('duplicados-iniciar');
 			const botonRecalcularDuplicados = document.getElementById('duplicados-recalcular');
 			const botonCancelarDuplicados = document.getElementById('duplicados-cancelar');
+			const botonCatalogarYandexDuplicados = document.getElementById('duplicados-yandex-catalogar');
+			const botonCancelarCatalogoYandexDuplicados = document.getElementById('duplicados-yandex-catalogar-cancelar');
+			const botonIniciarYandexDuplicados = document.getElementById('duplicados-yandex-iniciar');
+			const botonCancelarYandexDuplicados = document.getElementById('duplicados-yandex-cancelar');
 			const progresoDuplicados = document.getElementById('duplicados-progreso');
+			const progresoCatalogoYandexDuplicados = document.getElementById('duplicados-yandex-catalogo-progreso');
+			const progresoYandexDuplicados = document.getElementById('duplicados-yandex-progreso');
 			const mensajeDuplicados = document.getElementById('duplicados-mensaje');
+			const mensajeCatalogoYandexDuplicados = document.getElementById('duplicados-yandex-catalogo-mensaje');
+			const mensajeYandexDuplicados = document.getElementById('duplicados-yandex-mensaje');
 			const resultadosDuplicados = document.getElementById('duplicados-resultados');
 			const buscadorDuplicados = document.getElementById('duplicados-buscador');
+			const botonesFiltroOrigenDuplicados = Array.from(document.querySelectorAll('[data-duplicados-filtro-origen]'));
 			const cargaMasDuplicados = document.getElementById('duplicados-carga-mas');
 			const botonCargarMasDuplicados = cargaMasDuplicados?.querySelector('[data-duplicados-cargar-mas]');
 			const estadoCargaMasDuplicados = cargaMasDuplicados?.querySelector('[data-duplicados-carga-estado]');
@@ -910,9 +919,45 @@ document.addEventListener('DOMContentLoaded', function () {
 			let hayMasDuplicados = true;
 			let cargandoGruposDuplicados = false;
 			let trabajoDuplicadosActivoAnterior = false;
+			let filtroOrigenDuplicados = 'todos';
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
+			}
+
+			function trabajoYandexDuplicadosActivo(job) {
+				return job && ['queued', 'preparando', 'consultando', 'cancelando'].includes(String(job.estado || ''));
+			}
+
+			function trabajoCatalogoYandexDuplicadosActivo(job) {
+				return job && ['queued', 'catalogando', 'cancelando'].includes(String(job.estado || ''));
+			}
+
+			function normalizarFiltroOrigenDuplicados(valor) {
+				return ['local', 'remoto', 'mixto'].includes(String(valor || '')) ? String(valor) : 'todos';
+			}
+
+			function etiquetaFiltroOrigenDuplicados() {
+				return {
+					local: 'locales',
+					remoto: 'remotos',
+					mixto: 'mixtos'
+				}[filtroOrigenDuplicados] || '';
+			}
+
+			function mensajeVacioDuplicados() {
+				const etiqueta = etiquetaFiltroOrigenDuplicados();
+				return etiqueta
+					? `No hay duplicados ${etiqueta} exactos ni probables con las firmas disponibles.`
+					: 'No hay duplicados exactos ni probables con las firmas disponibles.';
+			}
+
+			function actualizarBotonesFiltroOrigenDuplicados() {
+				botonesFiltroOrigenDuplicados.forEach(boton => {
+					const activo = normalizarFiltroOrigenDuplicados(boton.dataset.duplicadosFiltroOrigen) === filtroOrigenDuplicados;
+					boton.classList.toggle('activo', activo);
+					boton.setAttribute('aria-pressed', activo ? 'true' : 'false');
+				});
 			}
 
 			function asegurarListaDuplicados() {
@@ -1159,7 +1204,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 				sincronizarOffsetDuplicadosConDom();
 				if (!totalGruposDuplicadosCargados() && !hayMasDuplicados) {
-					mostrarMensajeListaDuplicados('No hay duplicados exactos ni probables con las firmas disponibles.');
+					mostrarMensajeListaDuplicados(mensajeVacioDuplicados());
 				}
 				actualizarCargaMasDuplicados();
 			}
@@ -1394,7 +1439,8 @@ document.addEventListener('DOMContentLoaded', function () {
 				try {
 					const datos = await solicitarDuplicados('grupos', {
 						offset: offsetDuplicados,
-						limit: limitePaginaDuplicados
+						limit: limitePaginaDuplicados,
+						filtro_origen: filtroOrigenDuplicados
 					});
 					const lista = asegurarListaDuplicados();
 					const html = typeof datos?.html_grupos === 'string' ? datos.html_grupos : '';
@@ -1411,7 +1457,7 @@ document.addEventListener('DOMContentLoaded', function () {
 						pintarEstadoDuplicados(datos);
 					}
 					if (!totalGruposDuplicadosCargados() && !hayMasDuplicados) {
-						mostrarMensajeListaDuplicados('No hay duplicados exactos ni probables con las firmas disponibles.');
+						mostrarMensajeListaDuplicados(mensajeVacioDuplicados());
 					}
 					actualizarFiltroDuplicados();
 				} catch (err) {
@@ -1421,9 +1467,11 @@ document.addEventListener('DOMContentLoaded', function () {
 					actualizarCargaMasDuplicados();
 					if (mensajeDuplicados && !trabajoDuplicadosActivoAnterior) {
 						const cargados = totalGruposDuplicadosCargados();
+						const etiqueta = etiquetaFiltroOrigenDuplicados();
+						const prefijo = etiqueta ? `${etiqueta}: ` : '';
 						mensajeDuplicados.textContent = hayMasDuplicados
-							? `${cargados} grupos cargados.`
-							: `${cargados} grupos cargados. Lista completa.`;
+							? `${prefijo}${cargados} grupos cargados.`
+							: `${prefijo}${cargados} grupos cargados. Lista completa.`;
 					}
 				}
 			}
@@ -1432,6 +1480,11 @@ document.addEventListener('DOMContentLoaded', function () {
 				const estado = datos?.estado || {};
 				const job = estado.job || null;
 				const activo = trabajoDuplicadosActivo(job);
+				const yandex = estado.yandex || {};
+				const jobYandex = yandex.job || null;
+				const jobCatalogoYandex = yandex.catalog_job || null;
+				const activoYandex = trabajoYandexDuplicadosActivo(jobYandex);
+				const activoCatalogoYandex = trabajoCatalogoYandexDuplicadosActivo(jobCatalogoYandex);
 				const total = Number(job?.total || 0);
 				const procesados = Number(job?.procesados || 0);
 				if (progresoDuplicados) {
@@ -1447,8 +1500,44 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 				if (mensajeDuplicados) {
 					const resumen = estado.resumen || {};
-					const mensaje = job?.mensaje || (resumen.pendiente ? 'Grupos listos para cargar por tandas.' : `${Number(resumen.grupos || 0)} grupos encontrados.`);
+					const mensaje = job?.mensaje || (resumen.pendiente ? 'Local: grupos listos para cargar por tandas.' : `Local: ${Number(resumen.grupos || 0)} grupos encontrados.`);
 					mensajeDuplicados.textContent = datos?.error || mensaje;
+				}
+				const totalYandex = Number(jobYandex?.total || 0);
+				const procesadosYandex = Number(jobYandex?.procesados || 0);
+				if (progresoYandexDuplicados) {
+					if (totalYandex > 0) {
+						progresoYandexDuplicados.max = totalYandex;
+						progresoYandexDuplicados.value = Math.max(0, Math.min(procesadosYandex, totalYandex));
+					} else if (activoYandex) {
+						progresoYandexDuplicados.removeAttribute('value');
+					} else {
+						progresoYandexDuplicados.max = 1;
+						progresoYandexDuplicados.value = 1;
+					}
+				}
+				if (mensajeYandexDuplicados) {
+					const pendientes = Number(yandex.pendientes_hash || 0);
+					const conHash = Number(yandex.total || yandex.con_hash || 0);
+					const mensaje = jobYandex?.mensaje || `Yandex: ${conHash} con hash · ${pendientes} pendientes.`;
+					mensajeYandexDuplicados.textContent = datos?.error || mensaje;
+				}
+				const directoriosCatalogados = Number(jobCatalogoYandex?.directorios || 0);
+				const directoriosPendientes = Number(jobCatalogoYandex?.directorios_pendientes || 0);
+				const totalCatalogo = Math.max(1, Number(jobCatalogoYandex?.total || 0), directoriosCatalogados + directoriosPendientes);
+				if (progresoCatalogoYandexDuplicados) {
+					if (activoCatalogoYandex || jobCatalogoYandex) {
+						progresoCatalogoYandexDuplicados.max = totalCatalogo;
+						progresoCatalogoYandexDuplicados.value = Math.max(0, Math.min(directoriosCatalogados, totalCatalogo));
+					} else {
+						progresoCatalogoYandexDuplicados.max = 1;
+						progresoCatalogoYandexDuplicados.value = 1;
+					}
+				}
+				if (mensajeCatalogoYandexDuplicados) {
+					const totalCatalogado = Number(yandex.catalogo_total || 0);
+					const mensaje = jobCatalogoYandex?.mensaje || `Catálogo Yandex: ${totalCatalogado} multimedia registrados.`;
+					mensajeCatalogoYandexDuplicados.textContent = datos?.error || mensaje;
 				}
 				if (resultadosDuplicados && typeof datos?.html_resultados === 'string') {
 					resultadosDuplicados.innerHTML = datos.html_resultados;
@@ -1457,7 +1546,11 @@ document.addEventListener('DOMContentLoaded', function () {
 				if (botonIniciarDuplicados) botonIniciarDuplicados.disabled = activo;
 				if (botonRecalcularDuplicados) botonRecalcularDuplicados.disabled = activo;
 				if (botonCancelarDuplicados) botonCancelarDuplicados.disabled = !activo;
-				return activo;
+				if (botonCatalogarYandexDuplicados) botonCatalogarYandexDuplicados.disabled = activoCatalogoYandex;
+				if (botonCancelarCatalogoYandexDuplicados) botonCancelarCatalogoYandexDuplicados.disabled = !activoCatalogoYandex;
+				if (botonIniciarYandexDuplicados) botonIniciarYandexDuplicados.disabled = activoYandex;
+				if (botonCancelarYandexDuplicados) botonCancelarYandexDuplicados.disabled = !activoYandex;
+				return activo || activoYandex || activoCatalogoYandex;
 			}
 
 			async function solicitarDuplicados(accion, extra = {}) {
@@ -1543,8 +1636,49 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 			}
 
+			async function iniciarHashesYandexDuplicados() {
+				if (mensajeYandexDuplicados) mensajeYandexDuplicados.textContent = 'Preparando consulta de Yandex...';
+				try {
+					const datos = await solicitarDuplicados('yandex_hashes');
+					const activo = pintarEstadoDuplicados(datos);
+					trabajoDuplicadosActivoAnterior = activo;
+					if (activo) {
+						programarMonitoreoDuplicados();
+					}
+				} catch (err) {
+					if (mensajeYandexDuplicados) mensajeYandexDuplicados.textContent = `No se pudo iniciar Yandex: ${err.message}`;
+				}
+			}
+
+			async function iniciarCatalogoYandexDuplicados(forzar = false) {
+				if (mensajeCatalogoYandexDuplicados) mensajeCatalogoYandexDuplicados.textContent = forzar ? 'Reiniciando catálogo remoto de Yandex...' : 'Preparando catálogo remoto de Yandex...';
+				try {
+					const datos = await solicitarDuplicados('yandex_catalogo', { forzar_catalogo: forzar });
+					const activo = pintarEstadoDuplicados(datos);
+					trabajoDuplicadosActivoAnterior = activo;
+					if (activo) {
+						programarMonitoreoDuplicados();
+					}
+				} catch (err) {
+					if (mensajeCatalogoYandexDuplicados) mensajeCatalogoYandexDuplicados.textContent = `No se pudo iniciar el catálogo Yandex: ${err.message}`;
+				}
+			}
+
+			function cambiarFiltroOrigenDuplicados(filtro) {
+				const normalizado = normalizarFiltroOrigenDuplicados(filtro);
+				filtroOrigenDuplicados = filtroOrigenDuplicados === normalizado ? 'todos' : normalizado;
+				actualizarBotonesFiltroOrigenDuplicados();
+				cargarGruposDuplicados({ reiniciar: true });
+			}
+
 			botonIniciarDuplicados?.addEventListener('click', () => iniciarDuplicados(false));
 			botonRecalcularDuplicados?.addEventListener('click', () => iniciarDuplicados(true));
+			botonCatalogarYandexDuplicados?.addEventListener('click', () => iniciarCatalogoYandexDuplicados(false));
+			botonIniciarYandexDuplicados?.addEventListener('click', () => iniciarHashesYandexDuplicados());
+			botonesFiltroOrigenDuplicados.forEach(boton => {
+				boton.setAttribute('aria-pressed', 'false');
+				boton.addEventListener('click', () => cambiarFiltroOrigenDuplicados(boton.dataset.duplicadosFiltroOrigen));
+			});
 			botonCancelarDuplicados?.addEventListener('click', async () => {
 				try {
 					const datos = await solicitarDuplicados('cancelar');
@@ -1552,6 +1686,24 @@ document.addEventListener('DOMContentLoaded', function () {
 					programarMonitoreoDuplicados();
 				} catch (err) {
 					if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo cancelar: ${err.message}`;
+				}
+			});
+			botonCancelarCatalogoYandexDuplicados?.addEventListener('click', async () => {
+				try {
+					const datos = await solicitarDuplicados('yandex_catalogo_cancelar');
+					trabajoDuplicadosActivoAnterior = pintarEstadoDuplicados(datos);
+					programarMonitoreoDuplicados();
+				} catch (err) {
+					if (mensajeCatalogoYandexDuplicados) mensajeCatalogoYandexDuplicados.textContent = `No se pudo cancelar el catálogo Yandex: ${err.message}`;
+				}
+			});
+			botonCancelarYandexDuplicados?.addEventListener('click', async () => {
+				try {
+					const datos = await solicitarDuplicados('yandex_cancelar');
+					trabajoDuplicadosActivoAnterior = pintarEstadoDuplicados(datos);
+					programarMonitoreoDuplicados();
+				} catch (err) {
+					if (mensajeYandexDuplicados) mensajeYandexDuplicados.textContent = `No se pudo cancelar Yandex: ${err.message}`;
 				}
 			});
 			botonCargarMasDuplicados?.addEventListener('click', () => cargarGruposDuplicados());
@@ -1592,6 +1744,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 			});
 			buscadorDuplicados?.addEventListener('input', actualizarFiltroDuplicados);
+			actualizarBotonesFiltroOrigenDuplicados();
 			actualizarFiltroDuplicados();
 			actualizarCargaMasDuplicados('Cargando grupos...');
 			solicitarDuplicados('estado')

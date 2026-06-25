@@ -3099,6 +3099,46 @@ button.abrir-lightbox:active {
 		color: var(--text-body);
 	}
 
+	.duplicados-panel-filtros {
+		display: grid;
+		gap: 0.45rem;
+	}
+
+	.duplicados-panel-filtros button {
+		display: grid;
+		gap: 0.15rem;
+		width: 100%;
+		padding: 0.55rem;
+		border: 1px solid var(--border-color);
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--bg-body) 94%, var(--text-body) 6%);
+		color: var(--text-body);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.duplicados-panel-filtros button:hover,
+	.duplicados-panel-filtros button:focus-visible {
+		border-color: var(--accent-primary);
+	}
+
+	.duplicados-panel-filtros button.activo {
+		border-color: color-mix(in srgb, var(--accent-primary) 70%, var(--border-color));
+		background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-body));
+	}
+
+	.duplicados-panel-filtros strong {
+		font-size: 0.78rem;
+		line-height: 1.15;
+	}
+
+	.duplicados-panel-filtros span {
+		color: var(--grey-text);
+		font-size: 0.72rem;
+		line-height: 1.2;
+	}
+
 	.duplicados-vista {
 		display: grid;
 		width: 100%;
@@ -3306,7 +3346,15 @@ button.abrir-lightbox:active {
 		background: color-mix(in srgb, #d6a13f 14%, var(--bg-body));
 	}
 
+	.duplicados-grupo-meta {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) max-content;
+		align-items: start;
+		gap: 0.5rem;
+	}
+
 	.duplicados-hashes {
+		min-width: 0;
 		display: grid;
 		gap: 0.25rem;
 		padding: 0 0.7rem 0.55rem;
@@ -3315,13 +3363,19 @@ button.abrir-lightbox:active {
 	}
 
 	.duplicados-grupo-acciones {
+		justify-self: end;
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
+		justify-content: flex-end;
 		gap: 0.45rem;
 		padding: 0 0.7rem 0.65rem;
 		color: var(--grey-text);
 		font-size: 0.75rem;
+	}
+
+	.duplicados-grupo-acciones button {
+		white-space: nowrap;
 	}
 
 	.duplicados-items {
@@ -3553,21 +3607,22 @@ button.abrir-lightbox:active {
 		.duplicados-herramientas,
 		.duplicados-progreso,
 		.duplicados-item,
+		.duplicados-grupo-meta,
 		.duplicados-grupo summary {
 			grid-template-columns: 1fr;
 		}
 
-			.duplicados-acciones,
-			.duplicados-item-acciones,
-			.duplicados-grupo-acciones,
-			.duplicados-detalle-acciones {
-				justify-content: flex-start;
-			}
-
-			.duplicados-origen {
-				justify-self: start;
-			}
+		.duplicados-acciones,
+		.duplicados-item-acciones,
+		.duplicados-grupo-acciones,
+		.duplicados-detalle-acciones {
+			justify-content: flex-start;
 		}
+
+		.duplicados-origen {
+			justify-self: start;
+		}
+	}
 
 	@media (max-width: 760px) {
 	.lightbox-nav {
