@@ -272,6 +272,31 @@ function depurarCacheRecursoYandexDisk(string $ruta): array
 	return $resultado;
 }
 
+function yandexDiskMarcarRecursoAusente(string $ruta, string $motivo = ''): array
+{
+	$ruta = normalizarRutaYandexDisk($ruta);
+	$resultado = depurarCacheRecursoYandexDisk($ruta);
+	$resultado['catalogo_actualizados'] = 0;
+	$resultado['motivo'] = $motivo;
+	if ($ruta === '/'):
+		return $resultado;
+	endif;
+
+	$soporte = __DIR__ . DIRECTORY_SEPARATOR . 'soporte.php';
+	if (is_file($soporte)):
+		require_once $soporte;
+	endif;
+	$catalogo = __DIR__ . DIRECTORY_SEPARATOR . 'catalogo.php';
+	if (is_file($catalogo)):
+		require_once $catalogo;
+	endif;
+	if (function_exists('catalogoMarcarYandexAusente')):
+		$resultado['catalogo_actualizados'] = catalogoMarcarYandexAusente($ruta);
+	endif;
+
+	return $resultado;
+}
+
 function yandexDiskExtraerValorTexto(array $item, array $campos, array $meta = []): string
 {
 	foreach ($campos as $campo):
@@ -292,7 +317,7 @@ function yandexDiskExtraerValorTexto(array $item, array $campos, array $meta = [
 	return '';
 }
 
-function yandexDiskExtraerEntradaIndice(array $item): ?array
+function yandexDiskExtraerEntradaIndice(array $item, bool $requiereHash = true): ?array
 {
 	$tipo = (string) ($item['type'] ?? 'file');
 	if ($tipo !== 'file'):
@@ -300,7 +325,7 @@ function yandexDiskExtraerEntradaIndice(array $item): ?array
 	endif;
 
 	$meta = is_array($item['meta'] ?? null) ? $item['meta'] : [];
-	$rutaFuente = yandexDiskExtraerValorTexto($item, ['path', 'id'], $meta);
+	$rutaFuente = yandexDiskExtraerValorTexto($item, ['path', 'ruta', 'id'], $meta);
 	if ($rutaFuente === ''):
 		return null;
 	endif;
@@ -311,19 +336,27 @@ function yandexDiskExtraerEntradaIndice(array $item): ?array
 	endif;
 
 	$md5 = yandexDiskExtraerValorTexto($item, ['md5'], $meta);
-	if ($md5 === ''):
+	$sha256 = yandexDiskExtraerValorTexto($item, ['sha256'], $meta);
+	$esMultimedia = yandexDiskEsItemMultimedia($item);
+	if ($requiereHash && $md5 === ''):
+		return null;
+	endif;
+	if (!$requiereHash && !$esMultimedia):
 		return null;
 	endif;
 
-	$nombre = yandexDiskExtraerValorTexto($item, ['name'], $meta);
+	$nombre = yandexDiskExtraerValorTexto($item, ['name', 'nombre'], $meta);
 	if ($nombre === ''):
 		$nombre = basename($ruta);
 	endif;
 
 	$tamanoFuente = $item['size'] ?? $meta['size'] ?? null;
 	$tamano = is_numeric($tamanoFuente) ? max(0, (int) $tamanoFuente) : null;
-	$mime = yandexDiskExtraerValorTexto($item, ['mime_type', 'mimetype'], $meta);
+	$mime = yandexDiskExtraerValorTexto($item, ['mime_type', 'mimetype', 'mime'], $meta);
 	$mediaType = mb_strtolower(yandexDiskExtraerValorTexto($item, ['media_type', 'mediatype'], $meta), 'UTF-8');
+	if ($mediaType === '' && in_array(mb_strtolower((string) ($item['tipo'] ?? ''), 'UTF-8'), ['image', 'video'], true)):
+		$mediaType = mb_strtolower((string) $item['tipo'], 'UTF-8');
+	endif;
 	$exif = is_array($item['exif'] ?? null) ? $item['exif'] : (is_array($meta['exif'] ?? null) ? $meta['exif'] : []);
 	$ancho = yandexDiskEnteroDesdeCampos($item, ['width', 'image_width', 'ImageWidth'])
 		?? yandexDiskEnteroDesdeCampos($meta, ['width', 'image_width', 'ImageWidth'])
@@ -342,31 +375,31 @@ function yandexDiskExtraerEntradaIndice(array $item): ?array
 		'tipo' => $tipo,
 		'mime' => $mime,
 		'media_type' => $mediaType,
-		'es_multimedia' => yandexDiskEsItemMultimedia($item),
+		'es_multimedia' => $esMultimedia,
 		'md5' => $md5,
-		'sha256' => yandexDiskExtraerValorTexto($item, ['sha256'], $meta),
+		'sha256' => $sha256,
 		'resource_id' => yandexDiskExtraerValorTexto($item, ['resource_id'], $meta),
 		'tamano' => $tamano,
 		'ancho' => $ancho ?? 0,
 		'alto' => $alto ?? 0,
 		'duracion' => $duracion ?? 0,
 		'exif' => $exif,
-		'creado' => yandexDiskFechaRecurso($item['created'] ?? $item['ctime'] ?? ''),
-		'modificado' => yandexDiskFechaRecurso($item['modified'] ?? $item['mtime'] ?? $item['utime'] ?? $item['created'] ?? $item['ctime'] ?? ''),
+		'creado' => yandexDiskFechaRecurso($item['created'] ?? $item['creado'] ?? $item['ctime'] ?? ''),
+		'modificado' => yandexDiskFechaRecurso($item['modified'] ?? $item['modificado'] ?? $item['mtime'] ?? $item['utime'] ?? $item['created'] ?? $item['creado'] ?? $item['ctime'] ?? ''),
 		'desde_unlimited' => $desdeUnlimited,
 		'origen' => $desdeUnlimited ? 'From unlimited storage' : 'Yandex Disk',
 		'visto_en' => gmdate(DATE_ATOM),
 	];
 }
 
-function actualizarIndiceRecursosYandexDisk(array $recursos): void
+function actualizarIndiceRecursosYandexDisk(array $recursos, bool $requiereHash = true): void
 {
 	$nuevasEntradas = [];
 	foreach ($recursos as $item):
 		if (!is_array($item)):
 			continue;
 		endif;
-		$entrada = yandexDiskExtraerEntradaIndice($item);
+		$entrada = yandexDiskExtraerEntradaIndice($item, $requiereHash);
 		if ($entrada === null):
 			continue;
 		endif;
@@ -392,13 +425,47 @@ function actualizarIndiceRecursosYandexDisk(array $recursos): void
 	endif;
 
 	foreach ($nuevasEntradas as $ruta => $entrada):
-		$indice['resources'][$ruta] = $entrada;
+		$anterior = is_array($indice['resources'][$ruta] ?? null) ? $indice['resources'][$ruta] : [];
+		$indice['resources'][$ruta] = array_replace($anterior, $entrada);
 	endforeach;
 
 	yandexDiskReconstruirGruposMd5Indice($indice);
 	$indice['updated_at'] = gmdate(DATE_ATOM);
 
 	file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+}
+
+function actualizarIndiceEntradaYandexDisk(array $entrada): bool
+{
+	$ruta = normalizarRutaYandexDisk((string) ($entrada['ruta'] ?? ''));
+	if ($ruta === '/'):
+		return false;
+	endif;
+	if (!prepararDirectorioCacheYandexDisk()):
+		return false;
+	endif;
+
+	$entrada['ruta'] = $ruta;
+	$archivo = rutaArchivoIndiceYandexDisk();
+	$indice = [
+		'version' => YANDEX_DISK_CACHE_VERSION,
+		'updated_at' => '',
+		'resources' => [],
+		'md5_groups' => [],
+	];
+	if (is_file($archivo)):
+		$actual = json_decode((string) file_get_contents($archivo), true);
+		if (is_array($actual) && (int) ($actual['version'] ?? 0) === YANDEX_DISK_CACHE_VERSION):
+			$indice['resources'] = is_array($actual['resources'] ?? null) ? $actual['resources'] : [];
+		endif;
+	endif;
+
+	$anterior = is_array($indice['resources'][$ruta] ?? null) ? $indice['resources'][$ruta] : [];
+	$indice['resources'][$ruta] = array_replace($anterior, $entrada);
+	yandexDiskReconstruirGruposMd5Indice($indice);
+	$indice['updated_at'] = gmdate(DATE_ATOM);
+
+	return file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false;
 }
 
 function yandexDiskRutaVisible(string $ruta): string
@@ -878,7 +945,9 @@ function obtenerPreviewYandexDisk(array $configuracion, string $ruta, string $ta
 	], $token, 10);
 
 	if (!$respuesta['ok']):
-		return ['ok' => false, 'status' => (int) ($respuesta['status'] ?? 502), 'error' => $respuesta['error'], 'mime' => '', 'body' => ''];
+		$status = (int) ($respuesta['status'] ?? 502);
+		$limpieza = $status === 404 ? yandexDiskMarcarRecursoAusente($ruta, 'preview_404') : null;
+		return ['ok' => false, 'status' => $status, 'error' => $respuesta['error'], 'mime' => '', 'body' => '', 'limpieza' => $limpieza];
 	endif;
 
 	$datos = is_array($respuesta['data'] ?? null) ? $respuesta['data'] : [];
@@ -908,7 +977,9 @@ function obtenerUrlDescargaYandexDisk(array $configuracion, string $ruta): array
 	], $token, 10);
 
 	if (!$respuesta['ok']):
-		return ['ok' => false, 'status' => (int) ($respuesta['status'] ?? 502), 'error' => $respuesta['error'], 'href' => ''];
+		$status = (int) ($respuesta['status'] ?? 502);
+		$limpieza = $status === 404 ? yandexDiskMarcarRecursoAusente($ruta, 'download_404') : null;
+		return ['ok' => false, 'status' => $status, 'error' => $respuesta['error'], 'href' => '', 'limpieza' => $limpieza];
 	endif;
 
 	$datos = is_array($respuesta['data'] ?? null) ? $respuesta['data'] : [];
@@ -973,7 +1044,9 @@ function obtenerRecursoYandexDisk(array $configuracion, string $ruta): array
 	], $token, 10);
 
 	if (!$respuesta['ok']):
-		return ['ok' => false, 'status' => (int) ($respuesta['status'] ?? 502), 'error' => $respuesta['error'], 'recurso' => null];
+		$status = (int) ($respuesta['status'] ?? 502);
+		$limpieza = $status === 404 ? yandexDiskMarcarRecursoAusente($ruta, 'resource_404') : null;
+		return ['ok' => false, 'status' => $status, 'error' => $respuesta['error'], 'recurso' => null, 'limpieza' => $limpieza];
 	endif;
 
 	$datos = is_array($respuesta['data'] ?? null) ? $respuesta['data'] : [];
@@ -1003,10 +1076,20 @@ function enviarPapeleraYandexDisk(array $configuracion, string $ruta): array
 	], $token, 20, 'DELETE');
 
 	if (!$respuesta['ok']):
+		if ((int) ($respuesta['status'] ?? 0) === 404):
+			$cache = yandexDiskMarcarRecursoAusente($ruta, 'trash_404');
+			return [
+				'ok' => true,
+				'status' => 404,
+				'error' => '',
+				'data' => [],
+				'cache' => $cache,
+			];
+		endif;
 		return ['ok' => false, 'status' => (int) ($respuesta['status'] ?? 502), 'error' => $respuesta['error'] ?? 'No se pudo enviar el archivo a la papelera.'];
 	endif;
 
-	$cache = depurarCacheRecursoYandexDisk($ruta);
+	$cache = yandexDiskMarcarRecursoAusente($ruta, 'trash');
 
 	return [
 		'ok' => true,
@@ -1020,9 +1103,9 @@ function enviarPapeleraYandexDisk(array $configuracion, string $ruta): array
 function yandexDiskEsItemMultimedia(array $item): bool
 {
 	$meta = is_array($item['meta'] ?? null) ? $item['meta'] : [];
-	$media = mb_strtolower((string) ($item['media_type'] ?? $meta['mediatype'] ?? ''), 'UTF-8');
-	$mime = mb_strtolower((string) ($item['mime_type'] ?? $meta['mimetype'] ?? ''), 'UTF-8');
-	$nombre = mb_strtolower((string) ($item['name'] ?? $item['path'] ?? $item['id'] ?? ''), 'UTF-8');
+	$media = mb_strtolower((string) ($item['media_type'] ?? $item['tipo'] ?? $meta['mediatype'] ?? ''), 'UTF-8');
+	$mime = mb_strtolower((string) ($item['mime_type'] ?? $item['mime'] ?? $meta['mimetype'] ?? ''), 'UTF-8');
+	$nombre = mb_strtolower((string) ($item['name'] ?? $item['nombre'] ?? $item['path'] ?? $item['ruta'] ?? $item['id'] ?? ''), 'UTF-8');
 	return in_array($media, ['image', 'video'], true)
 		|| str_starts_with($mime, 'image/')
 		|| str_starts_with($mime, 'video/')
@@ -1437,6 +1520,68 @@ function obtenerDirectorioYandexDisk(array $configuracion, string $ruta = '/', i
 	$estado['unlimited'] = detectarUnlimitedStorageYandexDisk($directorios, $ruta, $estado['total']);
 
 	return $estado;
+}
+
+function obtenerDirectorioYandexDiskRemotoCatalogo(array $configuracion, string $ruta = '/', int $limite = 100, int $offset = 0): array
+{
+	$token = yandexDiskApiKeyConfiguracion($configuracion);
+	if ($token === ''):
+		return ['ok' => false, 'status' => 401, 'error' => 'No hay API Key de Yandex.Disk configurada.', 'recursos' => [], 'total' => 0, 'limit' => 0, 'offset' => 0];
+	endif;
+
+	$ruta = normalizarRutaYandexDisk($ruta);
+	$limite = max(1, min(200, $limite));
+	$offset = max(0, $offset);
+	$parametros = [
+		'path' => $ruta,
+		'limit' => $limite,
+		'offset' => $offset,
+		'sort' => 'name',
+		'fields' => 'name,path,type,_embedded.total,_embedded.limit,_embedded.offset,_embedded.items.name,_embedded.items.path,_embedded.items.type,_embedded.items.mime_type,_embedded.items.media_type,_embedded.items.md5,_embedded.items.sha256,_embedded.items.size,_embedded.items.modified,_embedded.items.created,_embedded.items.preview,_embedded.items.public_url,_embedded.items.resource_id,_embedded.items.exif',
+		'preview_size' => 'M',
+		'preview_crop' => 'false',
+	];
+
+	$respuesta = yandexDiskPeticion('resources', $parametros, $token, 20);
+	if (!$respuesta['ok']):
+		return [
+			'ok' => false,
+			'status' => (int) ($respuesta['status'] ?? 502),
+			'error' => (string) ($respuesta['error'] ?? 'No se pudo leer Yandex Disk.'),
+			'recursos' => [],
+			'total' => 0,
+			'limit' => $limite,
+			'offset' => $offset,
+		];
+	endif;
+
+	$datos = is_array($respuesta['data'] ?? null) ? $respuesta['data'] : [];
+	$parametrosCache = $parametros;
+	$parametrosCache['_token_hash'] = hash('sha256', $token);
+	guardarCacheYandexDisk(claveCacheYandexDisk('resources-catalog', $parametrosCache), $datos);
+
+	$recursos = [];
+	foreach ((array) ($datos['_embedded']['items'] ?? []) as $item):
+		if (is_array($item)):
+			$recursos[] = $item;
+		endif;
+	endforeach;
+	if (($datos['type'] ?? '') === 'file'):
+		$recursos = [$datos];
+	endif;
+
+	actualizarIndiceRecursosYandexDisk($recursos, false);
+
+	return [
+		'ok' => true,
+		'status' => (int) ($respuesta['status'] ?? 200),
+		'error' => '',
+		'recursos' => $recursos,
+		'total' => (int) ($datos['_embedded']['total'] ?? count($recursos)),
+		'limit' => (int) ($datos['_embedded']['limit'] ?? $limite),
+		'offset' => (int) ($datos['_embedded']['offset'] ?? $offset),
+		'ruta' => $ruta,
+	];
 }
 
 function obtenerPaginaPhotosYandexDisk(array $configuracion, int $pagina = 1, int $limite = 21): array

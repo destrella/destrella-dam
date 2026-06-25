@@ -25,6 +25,11 @@ datos/*.db-*
 datos/yandex_cache/
 datos/duplicados_job_actual.json
 datos/duplicados_jobs/
+datos/duplicados_yandex_job_actual.json
+datos/duplicados_yandex_jobs/
+datos/duplicados_yandex_resumen.json
+datos/yandex_catalogo_job_actual.json
+datos/yandex_catalogo_jobs/
 
 # Biblioteca multimedia y archivos operativos del DAM
 imgs/

@@ -1,6 +1,6 @@
 <?php
 
-const CATALOGO_MULTIMEDIA_DB_VERSION = 1;
+const CATALOGO_MULTIMEDIA_DB_VERSION = 2;
 
 function catalogoDirectorioDatos(): string
 {
@@ -22,6 +22,29 @@ function catalogoPrepararDatos(): bool
 	return is_dir($directorio) && is_writable($directorio);
 }
 
+function catalogoAsegurarColumna(PDO $pdo, array $columnas, string $nombre, string $definicion): void
+{
+	if (in_array($nombre, $columnas, true)):
+		return;
+	endif;
+
+	$pdo->exec('ALTER TABLE medios ADD COLUMN ' . $nombre . ' ' . $definicion);
+}
+
+function catalogoMigrarBase(PDO $pdo): void
+{
+	$filas = $pdo->query('PRAGMA table_info(medios)')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+	$columnas = array_map(fn($fila) => (string) ($fila['name'] ?? ''), $filas);
+
+	catalogoAsegurarColumna($pdo, $columnas, 'origen', "TEXT NOT NULL DEFAULT 'local'");
+	catalogoAsegurarColumna($pdo, $columnas, 'ruta_remota', "TEXT NOT NULL DEFAULT ''");
+	catalogoAsegurarColumna($pdo, $columnas, 'resource_id', "TEXT NOT NULL DEFAULT ''");
+	catalogoAsegurarColumna($pdo, $columnas, 'mime', "TEXT NOT NULL DEFAULT ''");
+	catalogoAsegurarColumna($pdo, $columnas, 'preview', "TEXT NOT NULL DEFAULT ''");
+	catalogoAsegurarColumna($pdo, $columnas, 'url', "TEXT NOT NULL DEFAULT ''");
+	catalogoAsegurarColumna($pdo, $columnas, 'creado', "INTEGER NOT NULL DEFAULT 0");
+}
+
 function conectarCatalogoMultimedia(): ?PDO
 {
 	static $pdo = null;
@@ -41,6 +64,13 @@ function conectarCatalogoMultimedia(): ?PDO
 			CREATE TABLE IF NOT EXISTS medios (
 				ruta TEXT PRIMARY KEY,
 				ruta_relativa TEXT NOT NULL DEFAULT '',
+				origen TEXT NOT NULL DEFAULT 'local',
+				ruta_remota TEXT NOT NULL DEFAULT '',
+				resource_id TEXT NOT NULL DEFAULT '',
+				mime TEXT NOT NULL DEFAULT '',
+				preview TEXT NOT NULL DEFAULT '',
+				url TEXT NOT NULL DEFAULT '',
+				creado INTEGER NOT NULL DEFAULT 0,
 				directorio TEXT NOT NULL,
 				nombre TEXT NOT NULL,
 				extension TEXT NOT NULL,
@@ -70,6 +100,7 @@ function conectarCatalogoMultimedia(): ?PDO
 				actualizado INTEGER NOT NULL DEFAULT 0
 			)
 		");
+		catalogoMigrarBase($pdo);
 		$pdo->exec("
 			CREATE TABLE IF NOT EXISTS estado_catalogo (
 				clave TEXT PRIMARY KEY,
@@ -79,6 +110,9 @@ function conectarCatalogoMultimedia(): ?PDO
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_mtime ON medios(existente, mtime DESC, ruta ASC)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_tipo_mtime ON medios(existente, tipo, mtime DESC)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_directorio ON medios(directorio)');
+		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_origen ON medios(origen, existente)');
+		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_origen_mtime ON medios(origen, existente, mtime DESC)');
+		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_ruta_remota ON medios(origen, ruta_remota)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_md5 ON medios(md5)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_sha256 ON medios(sha256)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_catalogo_contenido ON medios(contenido_hash)');
@@ -157,6 +191,13 @@ function catalogoDatosArchivo(string $ruta, ?string $tipo = null, array $extra =
 	$datos = [
 		'ruta' => $ruta,
 		'ruta_relativa' => rutaRelativaParaParametro($ruta),
+		'origen' => 'local',
+		'ruta_remota' => '',
+		'resource_id' => '',
+		'mime' => '',
+		'preview' => '',
+		'url' => '',
+		'creado' => 0,
 		'directorio' => str_replace('\\', '/', dirname($ruta)),
 		'nombre' => basename($ruta),
 		'extension' => $extension,
@@ -195,6 +236,126 @@ function catalogoDatosArchivo(string $ruta, ?string $tipo = null, array $extra =
 	return $datos;
 }
 
+function catalogoTimestampRemoto(mixed $valor): int
+{
+	if (is_numeric($valor)):
+		return max(0, (int) $valor);
+	endif;
+
+	$timestamp = strtotime((string) $valor);
+	return $timestamp !== false ? $timestamp : 0;
+}
+
+function catalogoTipoYandexDesdeEntrada(array $entrada): string
+{
+	$media = mb_strtolower((string) ($entrada['media_type'] ?? $entrada['tipo'] ?? ''), 'UTF-8');
+	$mime = mb_strtolower((string) ($entrada['mime'] ?? $entrada['mime_type'] ?? ''), 'UTF-8');
+	$ruta = (string) ($entrada['ruta'] ?? $entrada['path'] ?? '');
+	$extension = mb_strtolower((string) pathinfo($ruta, PATHINFO_EXTENSION), 'UTF-8');
+
+	if ($media === 'image' || str_starts_with($mime, 'image/')):
+		return 'img';
+	endif;
+	if ($media === 'video' || str_starts_with($mime, 'video/')):
+		return 'vid';
+	endif;
+	if (in_array($extension, ['jpg', 'jpeg', 'webp', 'png', 'heic', 'avif', 'gif', 'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'orf', 'rw2', 'pef', 'srw'], true)):
+		return 'img';
+	endif;
+	if (in_array($extension, ['mp4', 'mov', 'm4v', 'webm', 'mkv', 'avi'], true)):
+		return 'vid';
+	endif;
+
+	return '';
+}
+
+function catalogoDatosYandex(array $entrada, int $verificado = 0): ?array
+{
+	$rutaFuente = (string) ($entrada['ruta'] ?? $entrada['path'] ?? $entrada['id'] ?? '');
+	$rutaRemota = function_exists('normalizarRutaYandexDisk') ? normalizarRutaYandexDisk($rutaFuente) : '/' . ltrim($rutaFuente, '/');
+	if ($rutaRemota === '/'):
+		return null;
+	endif;
+
+	$tipo = catalogoTipoYandexDesdeEntrada(array_replace($entrada, ['ruta' => $rutaRemota]));
+	if ($tipo === ''):
+		return null;
+	endif;
+
+	$nombre = trim((string) ($entrada['nombre'] ?? $entrada['name'] ?? ''));
+	if ($nombre === ''):
+		$nombre = basename($rutaRemota);
+	endif;
+	$extension = mb_strtolower((string) pathinfo($nombre !== '' ? $nombre : $rutaRemota, PATHINFO_EXTENSION), 'UTF-8');
+	$directorioRemoto = dirname($rutaRemota);
+	if ($directorioRemoto === '.' || $directorioRemoto === '\\'):
+		$directorioRemoto = '/';
+	endif;
+
+	$modificado = catalogoTimestampRemoto($entrada['modificado'] ?? $entrada['modified'] ?? $entrada['mtime'] ?? $entrada['created'] ?? $entrada['creado'] ?? '');
+	$creado = catalogoTimestampRemoto($entrada['creado'] ?? $entrada['created'] ?? '');
+	$exif = is_array($entrada['exif'] ?? null) ? $entrada['exif'] : [];
+	$ancho = (int) ($entrada['ancho'] ?? $entrada['width'] ?? $entrada['image_width'] ?? $exif['width'] ?? $exif['ExifImageWidth'] ?? $exif['PixelXDimension'] ?? 0);
+	$alto = (int) ($entrada['alto'] ?? $entrada['height'] ?? $entrada['image_height'] ?? $exif['height'] ?? $exif['ExifImageHeight'] ?? $exif['PixelYDimension'] ?? 0);
+	$duracion = (float) ($entrada['duracion'] ?? $entrada['duration'] ?? $exif['duration'] ?? $exif['duracion'] ?? 0);
+	$md5 = strtolower(trim((string) ($entrada['md5'] ?? '')));
+	$sha256 = strtolower(trim((string) ($entrada['sha256'] ?? '')));
+	$preview = (string) ($entrada['preview'] ?? $entrada['preview_lightbox'] ?? '');
+	$url = (string) ($entrada['url'] ?? $entrada['public_url'] ?? '');
+	if ($url === '' && function_exists('yandexDiskUrlCliente')):
+		$url = yandexDiskUrlCliente($rutaRemota);
+	endif;
+
+	return [
+		'ruta' => 'yandex:' . $rutaRemota,
+		'ruta_relativa' => $rutaRemota,
+		'origen' => 'yandex',
+		'ruta_remota' => $rutaRemota,
+		'resource_id' => (string) ($entrada['resource_id'] ?? ''),
+		'mime' => (string) ($entrada['mime'] ?? $entrada['mime_type'] ?? ''),
+		'preview' => $preview,
+		'url' => $url,
+		'creado' => $creado,
+		'directorio' => 'yandex:' . $directorioRemoto,
+		'nombre' => $nombre,
+		'extension' => $extension,
+		'tipo' => $tipo,
+		'mtime' => $modificado,
+		'tamano' => max(0, (int) ($entrada['tamano'] ?? $entrada['size'] ?? 0)),
+		'ancho' => max(0, $ancho),
+		'alto' => max(0, $alto),
+		'duracion' => max(0.0, $duracion),
+		'md5' => $md5,
+		'sha256' => $sha256,
+		'contenido_hash' => '',
+		'perceptual_hash' => '',
+		'firma_version' => 0,
+		'hash_actualizado' => ($md5 !== '' || $sha256 !== '') ? time() : 0,
+		'geo' => 0,
+		'regiones' => 0,
+		'rotacion' => 0,
+		'palabras' => 0,
+		'sugerencias' => 0,
+		'duplicadas' => 0,
+		'tracking' => 0,
+		'metadatos_actualizado' => 0,
+		'palabras_actualizado' => 0,
+		'existente' => 1,
+		'verificado' => $verificado > 0 ? $verificado : time(),
+		'actualizado' => time(),
+	];
+}
+
+function catalogoGuardarYandex(PDO $pdo, array $entrada, int $verificado = 0): bool
+{
+	$datos = catalogoDatosYandex($entrada, $verificado);
+	if ($datos === null):
+		return false;
+	endif;
+
+	return catalogoGuardarMedio($pdo, $datos);
+}
+
 function catalogoStatementGuardar(PDO $pdo): PDOStatement
 {
 	static $statements = [];
@@ -205,13 +366,15 @@ function catalogoStatementGuardar(PDO $pdo): PDOStatement
 
 	$statements[$key] = $pdo->prepare("
 		INSERT INTO medios (
-			ruta, ruta_relativa, directorio, nombre, extension, tipo, mtime, tamano,
+			ruta, ruta_relativa, origen, ruta_remota, resource_id, mime, preview,
+			url, creado, directorio, nombre, extension, tipo, mtime, tamano,
 			ancho, alto, duracion, md5, sha256, contenido_hash, perceptual_hash,
 			firma_version, hash_actualizado, geo, regiones, rotacion, palabras,
 			sugerencias, duplicadas, tracking, metadatos_actualizado,
 			palabras_actualizado, existente, verificado, actualizado
 		) VALUES (
-			:ruta, :ruta_relativa, :directorio, :nombre, :extension, :tipo, :mtime, :tamano,
+			:ruta, :ruta_relativa, :origen, :ruta_remota, :resource_id, :mime, :preview,
+			:url, :creado, :directorio, :nombre, :extension, :tipo, :mtime, :tamano,
 			:ancho, :alto, :duracion, :md5, :sha256, :contenido_hash, :perceptual_hash,
 			:firma_version, :hash_actualizado, :geo, :regiones, :rotacion, :palabras,
 			:sugerencias, :duplicadas, :tracking, :metadatos_actualizado,
@@ -219,6 +382,13 @@ function catalogoStatementGuardar(PDO $pdo): PDOStatement
 		)
 		ON CONFLICT(ruta) DO UPDATE SET
 			ruta_relativa = excluded.ruta_relativa,
+			origen = excluded.origen,
+			ruta_remota = excluded.ruta_remota,
+			resource_id = excluded.resource_id,
+			mime = excluded.mime,
+			preview = excluded.preview,
+			url = excluded.url,
+			creado = CASE WHEN excluded.creado > 0 THEN excluded.creado ELSE medios.creado END,
 			directorio = excluded.directorio,
 			nombre = excluded.nombre,
 			extension = excluded.extension,
@@ -297,7 +467,8 @@ function catalogoStatementGuardar(PDO $pdo): PDOStatement
 function catalogoGuardarMedio(PDO $pdo, array $datos): bool
 {
 	$campos = [
-		'ruta', 'ruta_relativa', 'directorio', 'nombre', 'extension', 'tipo', 'mtime', 'tamano',
+		'ruta', 'ruta_relativa', 'origen', 'ruta_remota', 'resource_id', 'mime', 'preview',
+		'url', 'creado', 'directorio', 'nombre', 'extension', 'tipo', 'mtime', 'tamano',
 		'ancho', 'alto', 'duracion', 'md5', 'sha256', 'contenido_hash', 'perceptual_hash',
 		'firma_version', 'hash_actualizado', 'geo', 'regiones', 'rotacion', 'palabras',
 		'sugerencias', 'duplicadas', 'tracking', 'metadatos_actualizado', 'palabras_actualizado',
@@ -306,6 +477,10 @@ function catalogoGuardarMedio(PDO $pdo, array $datos): bool
 	$bindings = [];
 	foreach ($campos as $campo):
 		$bindings[':' . $campo] = $datos[$campo] ?? match ($campo) {
+			'origen' => 'local',
+			'ruta', 'ruta_relativa', 'ruta_remota', 'resource_id', 'mime', 'preview', 'url',
+			'directorio', 'nombre', 'extension', 'tipo', 'md5', 'sha256', 'contenido_hash',
+			'perceptual_hash' => '',
 			'duracion' => 0.0,
 			'existente' => 1,
 			'actualizado' => time(),
@@ -350,6 +525,56 @@ function catalogoEliminarMedio(string $ruta): void
 		endif;
 		$stmt->execute([':ruta' => $normalizada, ':actualizado' => time()]);
 	endforeach;
+}
+
+function catalogoMarcarYandexAusente(string $rutaRemota): int
+{
+	$pdo = conectarCatalogoMultimedia();
+	if (!$pdo):
+		return 0;
+	endif;
+
+	$rutaRemota = function_exists('normalizarRutaYandexDisk')
+		? normalizarRutaYandexDisk($rutaRemota)
+		: '/' . ltrim(str_replace('\\', '/', trim($rutaRemota)), '/');
+	if ($rutaRemota === '/'):
+		return 0;
+	endif;
+
+	$stmt = $pdo->prepare("
+		UPDATE medios
+		SET existente = 0, actualizado = :actualizado
+		WHERE origen = 'yandex'
+			AND existente = 1
+			AND (ruta = :ruta OR ruta_remota = :ruta_remota OR ruta_relativa = :ruta_relativa)
+	");
+	$stmt->execute([
+		':actualizado' => time(),
+		':ruta' => 'yandex:' . $rutaRemota,
+		':ruta_remota' => $rutaRemota,
+		':ruta_relativa' => $rutaRemota,
+	]);
+	return $stmt->rowCount();
+}
+
+function catalogoMarcarYandexNoVerificados(PDO $pdo, int $run): int
+{
+	if ($run <= 0):
+		return 0;
+	endif;
+
+	$stmt = $pdo->prepare("
+		UPDATE medios
+		SET existente = 0, actualizado = :actualizado
+		WHERE origen = 'yandex'
+			AND existente = 1
+			AND verificado <> :verificado
+	");
+	$stmt->execute([
+		':actualizado' => time(),
+		':verificado' => $run,
+	]);
+	return $stmt->rowCount();
 }
 
 function catalogoLimpiarFirmasMedio(string $ruta): void

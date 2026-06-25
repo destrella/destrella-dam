@@ -346,12 +346,25 @@ if (array_key_exists('duplicados_accion', $json)):
 		$errorDuplicados = (string) ($resultadoDuplicados['error'] ?? '');
 	elseif ($accionDuplicados === 'cancelar'):
 		duplicadosCancelarTrabajo();
+	elseif ($accionDuplicados === 'yandex_hashes'):
+		$resultadoDuplicados = duplicadosYandexIniciarTrabajo(!empty($json['forzar_yandex']));
+		$okDuplicados = (bool) ($resultadoDuplicados['ok'] ?? false);
+		$errorDuplicados = (string) ($resultadoDuplicados['error'] ?? '');
+	elseif ($accionDuplicados === 'yandex_cancelar'):
+		duplicadosYandexCancelarTrabajo();
+	elseif ($accionDuplicados === 'yandex_catalogo'):
+		$resultadoDuplicados = duplicadosYandexCatalogoIniciarTrabajo(!empty($json['forzar_catalogo']));
+		$okDuplicados = (bool) ($resultadoDuplicados['ok'] ?? false);
+		$errorDuplicados = (string) ($resultadoDuplicados['error'] ?? '');
+	elseif ($accionDuplicados === 'yandex_catalogo_cancelar'):
+		duplicadosYandexCatalogoCancelarTrabajo();
 	elseif ($accionDuplicados === 'grupos'):
 		$offsetDuplicados = max(0, (int) ($json['offset'] ?? 0));
 		$limiteDuplicados = max(1, min(100, (int) ($json['limit'] ?? DUPLICADOS_GRUPOS_POR_PAGINA)));
+		$filtroOrigenDuplicados = duplicadosNormalizarFiltroOrigen($json['filtro_origen'] ?? 'todos');
 		echo json_encode(
 			duplicadosRespuestaPaginaGruposAjax(
-				duplicadosEstadoPaginaGrupos(['ruta' => rutaRelativaParaParametro($baseDuplicados)], $offsetDuplicados, $limiteDuplicados),
+				duplicadosEstadoPaginaGrupos(['ruta' => rutaRelativaParaParametro($baseDuplicados)], $offsetDuplicados, $limiteDuplicados, $filtroOrigenDuplicados),
 				$okDuplicados,
 				$errorDuplicados
 			),
