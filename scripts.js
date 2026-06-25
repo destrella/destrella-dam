@@ -920,6 +920,8 @@ document.addEventListener('DOMContentLoaded', function () {
 			let cargandoGruposDuplicados = false;
 			let trabajoDuplicadosActivoAnterior = false;
 			let filtroOrigenDuplicados = 'todos';
+			let modalMetadatosDuplicados = null;
+			let cargaModalMetadatosDuplicados = 0;
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
@@ -1064,6 +1066,386 @@ document.addEventListener('DOMContentLoaded', function () {
 			function htmlMetaDuplicado(etiqueta, valor) {
 				if (!valor) return '';
 				return `<dt>${escaparHtmlCliente(etiqueta)}</dt><dd>${escaparHtmlCliente(valor)}</dd>`;
+			}
+
+			function grupoDuplicadoTienePixelesSinMetadatos(item) {
+				const razones = item?.closest?.('[data-duplicado-grupo]')?.dataset?.duplicadoRazones || '';
+				return normalizarBusquedaLateral(razones).includes('pixeles identicos sin metadatos');
+			}
+
+			function htmlAvisoMetadatosDuplicado(item) {
+				if (!grupoDuplicadoTienePixelesSinMetadatos(item)) return '';
+				return '<p class="duplicados-metadatos-aviso">Los píxeles coinciden, pero los metadatos pueden indicar cuál archivo conserva la versión más completa o correcta.</p>';
+			}
+
+			function itemsGrupoDuplicado(itemActivo) {
+				const grupo = itemActivo?.closest?.('[data-duplicado-grupo]');
+				return Array.from(grupo?.querySelectorAll('[data-duplicado-item]') || []);
+			}
+
+			function anchoColumnaMetadatosDuplicados() {
+				const panel = document.getElementById('panelDetalleContenido');
+				const ancho = Math.round(panel?.getBoundingClientRect?.().width || 0);
+				return Math.max(280, ancho || 360);
+			}
+
+			function cerrarModalMetadatosDuplicados() {
+				const modal = modalMetadatosDuplicados;
+				if (!modal) return;
+				modal.hidden = true;
+				if (Array.isArray(modal._abortControllers)) {
+					modal._abortControllers.forEach(controlador => controlador.abort());
+				}
+				modal._abortControllers = [];
+				if (typeof modal._prevBodyOverflow !== 'undefined') {
+					document.body.style.overflow = modal._prevBodyOverflow;
+					delete modal._prevBodyOverflow;
+				}
+			}
+
+			function crearModalMetadatosDuplicados() {
+				if (modalMetadatosDuplicados) return modalMetadatosDuplicados;
+
+				modalMetadatosDuplicados = document.createElement('div');
+				modalMetadatosDuplicados.id = 'modal-duplicados-metadatos';
+				modalMetadatosDuplicados.className = 'modal-lote duplicados-metadatos-modal';
+				modalMetadatosDuplicados.hidden = true;
+				modalMetadatosDuplicados.setAttribute('role', 'dialog');
+				modalMetadatosDuplicados.setAttribute('aria-modal', 'true');
+				modalMetadatosDuplicados.setAttribute('aria-labelledby', 'modal-duplicados-metadatos-titulo');
+				modalMetadatosDuplicados.innerHTML =
+					'<div class="modal-lote-panel duplicados-metadatos-modal-panel">' +
+						'<header class="duplicados-metadatos-modal-cabecera">' +
+							'<div>' +
+								'<h2 id="modal-duplicados-metadatos-titulo">Metadatos del grupo</h2>' +
+								'<p data-duplicados-metadatos-contexto></p>' +
+								'<p class="duplicados-metadatos-modal-diferencias" data-duplicados-metadatos-diferencias></p>' +
+							'</div>' +
+							'<button type="button" data-duplicados-metadatos-cerrar aria-label="Cerrar">Cerrar</button>' +
+						'</header>' +
+						'<div class="duplicados-metadatos-modal-columnas" data-duplicados-metadatos-columnas></div>' +
+					'</div>';
+
+				modalMetadatosDuplicados.addEventListener('click', async ev => {
+					if (ev.target === modalMetadatosDuplicados || ev.target.closest?.('[data-duplicados-metadatos-cerrar]')) {
+						cerrarModalMetadatosDuplicados();
+						return;
+					}
+
+					const botonSeleccion = ev.target.closest?.('[data-duplicado-modal-seleccionar]');
+					if (botonSeleccion && modalMetadatosDuplicados.contains(botonSeleccion)) {
+						ev.preventDefault();
+						const columna = botonSeleccion.closest('[data-duplicado-modal-columna]');
+						const item = columna?._duplicadoItem;
+						if (item?.isConnected) {
+							alternarSeleccionDuplicado(item);
+							actualizarColumnasMetadatosDuplicados();
+						}
+						return;
+					}
+
+					const botonDescartar = ev.target.closest?.('[data-duplicado-modal-descartar]');
+					if (botonDescartar && modalMetadatosDuplicados.contains(botonDescartar)) {
+						ev.preventDefault();
+						await descartarDesdeModalMetadatosDuplicados(botonDescartar.closest('[data-duplicado-modal-columna]'), botonDescartar);
+					}
+				});
+
+				document.addEventListener('keydown', ev => {
+					if (ev.key === 'Escape' && modalMetadatosDuplicados && !modalMetadatosDuplicados.hidden) {
+						cerrarModalMetadatosDuplicados();
+					}
+				});
+
+				document.body.appendChild(modalMetadatosDuplicados);
+				return modalMetadatosDuplicados;
+			}
+
+			function actualizarColumnasMetadatosDuplicados() {
+				if (!modalMetadatosDuplicados || modalMetadatosDuplicados.hidden) return;
+				modalMetadatosDuplicados.querySelectorAll('[data-duplicado-modal-columna]').forEach(columna => {
+					const item = columna._duplicadoItem;
+					const botonSeleccion = columna.querySelector('[data-duplicado-modal-seleccionar]');
+					const botonDescartar = columna.querySelector('[data-duplicado-modal-descartar]');
+					const procesado = columna.classList.contains('procesado');
+					const conectado = Boolean(item?.isConnected);
+					const seleccionado = conectado && item.classList.contains('seleccionado');
+					if (botonSeleccion) {
+						botonSeleccion.disabled = procesado || !conectado;
+						botonSeleccion.setAttribute('aria-pressed', seleccionado ? 'true' : 'false');
+						botonSeleccion.textContent = seleccionado ? 'Quitar selección' : 'Seleccionar para borrar';
+					}
+					if (botonDescartar) {
+						botonDescartar.disabled = procesado || !conectado;
+					}
+				});
+			}
+
+			function limpiarDiferenciasMetadatosDuplicados(modal) {
+				modal?.querySelectorAll('[data-duplicado-metadato-fila]').forEach(fila => {
+					fila.classList.remove('duplicados-metadatos-diferente', 'duplicados-metadatos-diferente-volatil');
+					fila.removeAttribute('data-duplicado-metadato-diferente');
+					fila.removeAttribute('title');
+				});
+			}
+
+			function compararMetadatosModalDuplicados() {
+				const modal = modalMetadatosDuplicados;
+				if (!modal || modal.hidden) return;
+				limpiarDiferenciasMetadatosDuplicados(modal);
+
+				const resumen = modal.querySelector('[data-duplicados-metadatos-diferencias]');
+				const columnas = Array.from(modal.querySelectorAll('[data-duplicado-modal-columna]'))
+					.filter(columna => columna.dataset.metadatosEstado === 'ok');
+				if (columnas.length < 2) {
+					if (resumen) resumen.textContent = 'Cargando metadatos para comparar...';
+					return;
+				}
+
+				const porClave = new Map();
+				columnas.forEach((columna, indiceColumna) => {
+					columna.querySelectorAll('[data-duplicado-metadato-fila]').forEach(fila => {
+						const tipo = fila.dataset.duplicadoMetadatoTipo || 'normal';
+						const clave = fila.dataset.duplicadoMetadatoClave || '';
+						if (!clave || tipo === 'ignorar') return;
+						if (!porClave.has(clave)) {
+							porClave.set(clave, {
+								tipos: new Set(),
+								valores: new Map(),
+								filas: []
+							});
+						}
+						const entrada = porClave.get(clave);
+						entrada.tipos.add(tipo);
+						entrada.valores.set(indiceColumna, fila.dataset.duplicadoMetadatoHash || '');
+						entrada.filas.push(fila);
+					});
+				});
+
+				let diferencias = 0;
+				let diferenciasVolatiles = 0;
+				porClave.forEach(entrada => {
+					const valores = new Set(entrada.valores.values());
+					const faltanColumnas = entrada.valores.size < columnas.length;
+					if (valores.size <= 1 && !faltanColumnas) return;
+
+					const volatil = !entrada.tipos.has('normal');
+					if (volatil) {
+						diferenciasVolatiles++;
+					} else {
+						diferencias++;
+					}
+					entrada.filas.forEach(fila => {
+						fila.classList.add('duplicados-metadatos-diferente');
+						fila.dataset.duplicadoMetadatoDiferente = volatil ? 'volatil' : 'normal';
+						fila.title = volatil
+							? 'Diferencia en fecha o campo volátil'
+							: 'Diferencia de metadatos';
+						if (volatil) {
+							fila.classList.add('duplicados-metadatos-diferente-volatil');
+						}
+					});
+				});
+
+				if (resumen) {
+					const partes = [];
+					if (diferencias > 0) {
+						partes.push(`${diferencias} diferencia${diferencias === 1 ? '' : 's'} importante${diferencias === 1 ? '' : 's'}`);
+					}
+					if (diferenciasVolatiles > 0) {
+						partes.push(`${diferenciasVolatiles} fecha${diferenciasVolatiles === 1 ? '' : 's'} o campo${diferenciasVolatiles === 1 ? '' : 's'} volátil${diferenciasVolatiles === 1 ? '' : 'es'}`);
+					}
+					resumen.textContent = partes.length
+						? `Diferencias detectadas: ${partes.join(' · ')}.`
+						: 'Sin diferencias relevantes entre los metadatos cargados.';
+				}
+			}
+
+			function htmlResumenColumnaMetadatos(datos) {
+				const resumen = [datos.tamano, datos.dimensiones, datos.duracion, datos.modificado]
+					.filter(Boolean)
+					.join(' · ');
+				return resumen ? `<small>${escaparHtmlCliente(resumen)}</small>` : '';
+			}
+
+			function htmlColumnaMetadatosDuplicado(item, activo) {
+				const datos = datosDuplicadoDesdeElemento(item);
+				const seleccionado = item.classList.contains('seleccionado');
+				return (
+					`<article class="duplicados-metadatos-columna${activo ? ' activa' : ''}" data-duplicado-modal-columna>` +
+						'<div class="duplicados-metadatos-columna-acciones">' +
+							`<button type="button" data-duplicado-modal-descartar>${escaparHtmlCliente(datos.actionLabel || 'Descartar')}</button>` +
+							`<button type="button" data-duplicado-modal-seleccionar aria-pressed="${seleccionado ? 'true' : 'false'}">${seleccionado ? 'Quitar selección' : 'Seleccionar para borrar'}</button>` +
+						'</div>' +
+						'<div class="duplicados-metadatos-columna-identidad">' +
+							`<span class="duplicados-origen duplicados-origen-${escaparHtmlCliente(datos.origen)}">${escaparHtmlCliente(datos.origenEtiqueta)}</span>` +
+							`<strong title="${escaparHtmlCliente(datos.nombre)}">${escaparHtmlCliente(datos.nombre)}</strong>` +
+							`<code title="${escaparHtmlCliente(datos.ruta)}">${escaparHtmlCliente(datos.ruta)}</code>` +
+							htmlResumenColumnaMetadatos(datos) +
+							'<output data-duplicado-modal-estado aria-live="polite"></output>' +
+						'</div>' +
+						'<div class="duplicados-metadatos-columna-cuerpo" data-duplicado-modal-cuerpo>' +
+							'<p class="panel-cargando">Cargando metadatos...</p>' +
+						'</div>' +
+					'</article>'
+				);
+			}
+
+			async function solicitarMetadatosDuplicado(datos, signal) {
+				const respuesta = await fetch('index.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+					signal,
+					body: JSON.stringify({
+						duplicados_accion: 'metadatos',
+						origen: datos.origen,
+						archivo: datos.ruta
+					})
+				});
+				const payload = await respuesta.json().catch(() => null);
+				if (!respuesta.ok || !payload?.ok) {
+					throw new Error(payload?.error || 'No se pudieron cargar los metadatos.');
+				}
+				return payload;
+			}
+
+			async function cargarMetadatosColumnaDuplicado(columna, cargaId, signal) {
+				const cuerpo = columna?.querySelector('[data-duplicado-modal-cuerpo]');
+				const datos = columna?._duplicadoDatos;
+				if (!cuerpo || !datos) return;
+				try {
+					const payload = await solicitarMetadatosDuplicado(datos, signal);
+					if (signal?.aborted || String(modalMetadatosDuplicados?.dataset.cargaId || '') !== String(cargaId)) return;
+					cuerpo.innerHTML = payload.html || '<p class="duplicados-metadatos-vacio">No hay metadatos disponibles.</p>';
+					columna.dataset.metadatosEstado = 'ok';
+				} catch (err) {
+					if (err?.name === 'AbortError') return;
+					if (signal?.aborted || String(modalMetadatosDuplicados?.dataset.cargaId || '') !== String(cargaId)) return;
+					cuerpo.innerHTML = '<p class="respuesta_error">' + escaparHtmlCliente(err.message || 'No se pudieron cargar los metadatos.') + '</p>';
+					columna.dataset.metadatosEstado = 'error';
+				} finally {
+					if (signal?.aborted || String(modalMetadatosDuplicados?.dataset.cargaId || '') !== String(cargaId)) return;
+					compararMetadatosModalDuplicados();
+				}
+			}
+
+			function cargarColumnasMetadatosDuplicados(columnas, cargaId) {
+				const modal = modalMetadatosDuplicados;
+				if (!modal) return;
+				modal._abortControllers = [];
+				let indice = 0;
+				const concurrencia = Math.min(3, columnas.length);
+				const trabajador = async () => {
+					while (indice < columnas.length && !modal.hidden) {
+						const columna = columnas[indice++];
+						const controlador = new AbortController();
+						modal._abortControllers.push(controlador);
+						await cargarMetadatosColumnaDuplicado(columna, cargaId, controlador.signal);
+					}
+				};
+				for (let i = 0; i < concurrencia; i++) {
+					trabajador();
+				}
+			}
+
+			function abrirModalMetadatosDuplicados(itemActivo) {
+				if (!itemActivo) return;
+				const grupo = itemActivo.closest?.('[data-duplicado-grupo]');
+				const items = itemsGrupoDuplicado(itemActivo);
+				if (!grupo || !items.length) return;
+
+				const modal = crearModalMetadatosDuplicados();
+				const cargaId = String(++cargaModalMetadatosDuplicados);
+				modal.dataset.cargaId = cargaId;
+				cerrarModalMetadatosDuplicados();
+				modal.hidden = false;
+				modal._prevBodyOverflow = document.body.style.overflow || '';
+				document.body.style.overflow = 'hidden';
+				modal.style.setProperty('--duplicados-metadatos-columna', `${anchoColumnaMetadatosDuplicados()}px`);
+
+				const contexto = modal.querySelector('[data-duplicados-metadatos-contexto]');
+				const columnas = modal.querySelector('[data-duplicados-metadatos-columnas]');
+				const razones = grupo.dataset.duplicadoRazones || '';
+				if (contexto) {
+					contexto.textContent = `${items.length} archivos${razones ? ' · ' + razones : ''}`;
+				}
+				const resumenDiferencias = modal.querySelector('[data-duplicados-metadatos-diferencias]');
+				if (resumenDiferencias) {
+					resumenDiferencias.textContent = 'Cargando metadatos para comparar...';
+				}
+				if (!columnas) return;
+				columnas.innerHTML = items.map(item => htmlColumnaMetadatosDuplicado(item, item === itemActivo)).join('');
+
+				const columnasDom = Array.from(columnas.querySelectorAll('[data-duplicado-modal-columna]'));
+				columnasDom.forEach((columna, indiceColumna) => {
+					const item = items[indiceColumna];
+					columna._duplicadoItem = item;
+					columna._duplicadoDatos = datosDuplicadoDesdeElemento(item);
+				});
+				actualizarColumnasMetadatosDuplicados();
+				cargarColumnasMetadatosDuplicados(columnasDom, cargaId);
+
+				requestAnimationFrame(() => {
+					const activa = columnas.querySelector('.duplicados-metadatos-columna.activa');
+					activa?.scrollIntoView({ block: 'nearest', inline: 'center' });
+					modal.querySelector('[data-duplicados-metadatos-cerrar]')?.focus();
+				});
+			}
+
+			async function descartarDesdeModalMetadatosDuplicados(columna, boton) {
+				const item = columna?._duplicadoItem;
+				const datos = columna?._duplicadoDatos || (item ? datosDuplicadoDesdeElemento(item) : null);
+				const estado = columna?.querySelector('[data-duplicado-modal-estado]');
+				if (!columna || !item?.isConnected || !datos) {
+					if (estado) estado.textContent = 'Este archivo ya no está en el grupo.';
+					actualizarColumnasMetadatosDuplicados();
+					return;
+				}
+				if (!confirmarAccionDuplicado(datos)) return;
+
+				columna.classList.add('procesando');
+				columna.querySelectorAll('button').forEach(control => {
+					control.disabled = true;
+				});
+				if (boton) boton.setAttribute('aria-busy', 'true');
+				if (estado) {
+					estado.className = '';
+					estado.textContent = 'Procesando...';
+				}
+				mostrarCargaNavegacion(datos.actionLabel || 'Procesando');
+
+				try {
+					await ejecutarAccionDuplicado(datos);
+					eliminarItemDuplicadoDeVista(item);
+					columna.classList.remove('procesando');
+					columna.classList.add('procesado');
+					if (estado) {
+						estado.className = 'ok';
+						estado.textContent = `${datos.actionLabel}: listo.`;
+					}
+					if (itemDuplicadoActivo === item) {
+						mostrarResultadoAccionDuplicado(`${datos.actionLabel}: ${datos.ruta}`);
+					}
+					try {
+						const estadoDuplicados = await solicitarDuplicados('estado');
+						pintarEstadoDuplicados(estadoDuplicados);
+					} catch (err) {
+						if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo actualizar el estado: ${err.message}`;
+					}
+				} catch (err) {
+					columna.classList.remove('procesando');
+					if (estado) {
+						estado.className = 'error';
+						estado.textContent = err.message || 'No se pudo procesar el archivo.';
+					}
+					columna.querySelectorAll('button').forEach(control => {
+						control.disabled = false;
+					});
+				} finally {
+					if (boton) boton.removeAttribute('aria-busy');
+					ocultarCargaNavegacion();
+					actualizarColumnasMetadatosDuplicados();
+				}
 			}
 
 			function dimensionesDuplicadoDesdeTexto(valor) {
@@ -1235,8 +1617,10 @@ document.addEventListener('DOMContentLoaded', function () {
 						'</div>' +
 						'<div class="duplicados-detalle-acciones">' +
 							`<button type="button" data-duplicado-panel-accion>${escaparHtmlCliente(datos.actionLabel)}</button>` +
+							'<button type="button" data-duplicado-metadatos>Ver metadatos</button>' +
 							abrir +
 						'</div>' +
+						htmlAvisoMetadatosDuplicado(item) +
 						'<dl class="duplicados-preview-metadatos">' +
 							htmlMetaDuplicado('Tamaño', datos.tamano) +
 							htmlMetaDuplicado('Dimensiones', datos.dimensiones) +
@@ -1254,6 +1638,11 @@ document.addEventListener('DOMContentLoaded', function () {
 				const botonAccion = panel.querySelector('[data-duplicado-panel-accion]');
 				if (botonAccion) {
 					botonAccion._duplicadoDatos = datos;
+				}
+				const botonMetadatos = panel.querySelector('[data-duplicado-metadatos]');
+				if (botonMetadatos) {
+					botonMetadatos._duplicadoDatos = datos;
+					botonMetadatos._duplicadoItem = item;
 				}
 				aplicarAspectoPreviewDuplicado(panel);
 				const previewLightbox = panel.querySelector('[data-duplicado-preview-lightbox]');
@@ -1735,6 +2124,16 @@ document.addEventListener('DOMContentLoaded', function () {
 				mostrarDetalleDuplicado(item);
 			});
 			document.addEventListener('click', ev => {
+				const botonMetadatos = ev.target.closest?.('[data-duplicado-metadatos]');
+				if (botonMetadatos) {
+					ev.preventDefault();
+					const item = botonMetadatos._duplicadoItem || itemDuplicadoActivo;
+					if (item) {
+						abrirModalMetadatosDuplicados(item);
+					}
+					return;
+				}
+
 				const boton = ev.target.closest?.('[data-duplicado-panel-accion]');
 				if (!boton) return;
 				ev.preventDefault();
