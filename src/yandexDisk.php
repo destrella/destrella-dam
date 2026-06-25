@@ -114,6 +114,11 @@ function leerCacheYandexDisk(string $clave, ?int $ttl = YANDEX_DISK_CACHE_TTL): 
 	return is_array($cache['data'] ?? null) ? $cache : null;
 }
 
+function leerCacheVencidoYandexDisk(string $clave): ?array
+{
+	return leerCacheYandexDisk($clave, null);
+}
+
 function guardarCacheYandexDisk(string $clave, array $datos): void
 {
 	if (!prepararDirectorioCacheYandexDisk()):
@@ -587,6 +592,7 @@ function obtenerEspacioYandexDisk(array $configuracion): array
 
 	$claveCache = claveCacheYandexDisk('disk', ['_token_hash' => hash('sha256', $token)]);
 	$cache = leerCacheYandexDisk($claveCache);
+	$cacheVencido = null;
 	if ($cache !== null):
 		$respuesta = [
 			'ok' => true,
@@ -598,6 +604,16 @@ function obtenerEspacioYandexDisk(array $configuracion): array
 		$respuesta = yandexDiskPeticion('', [], $token, 10);
 		if ($respuesta['ok'] && is_array($respuesta['data'] ?? null)):
 			guardarCacheYandexDisk($claveCache, $respuesta['data']);
+		else:
+			$cacheVencido = leerCacheVencidoYandexDisk($claveCache);
+			if ($cacheVencido !== null):
+				$respuesta = [
+					'ok' => true,
+					'status' => 200,
+					'error' => '',
+					'data' => $cacheVencido['data'],
+				];
+			endif;
 		endif;
 	endif;
 	if (!$respuesta['ok']):
@@ -1331,6 +1347,7 @@ function obtenerDirectorioYandexDisk(array $configuracion, string $ruta = '/', i
 	$parametrosCache['_token_hash'] = hash('sha256', $token);
 	$claveCache = claveCacheYandexDisk('resources', $parametrosCache);
 	$cache = leerCacheYandexDisk($claveCache);
+	$cacheVencido = null;
 	if ($cache !== null):
 		$respuesta = [
 			'ok' => true,
@@ -1355,7 +1372,23 @@ function obtenerDirectorioYandexDisk(array $configuracion, string $ruta = '/', i
 				'created_at' => time(),
 			];
 		else:
-			$estado['cache']['key'] = $claveCache;
+			$cacheVencido = leerCacheVencidoYandexDisk($claveCache);
+			if ($cacheVencido !== null):
+				$respuesta = [
+					'ok' => true,
+					'status' => 200,
+					'error' => '',
+					'data' => $cacheVencido['data'],
+				];
+				$estado['cache'] = [
+					'hit' => true,
+					'stale' => true,
+					'key' => $claveCache,
+					'created_at' => (int) ($cacheVencido['created_at'] ?? 0),
+				];
+			else:
+				$estado['cache']['key'] = $claveCache;
+			endif;
 		endif;
 	endif;
 
@@ -1464,7 +1497,7 @@ function obtenerPaginaPhotosYandexDisk(array $configuracion, int $pagina = 1, in
 	return $estado;
 }
 
-function obtenerPaginaUltimosSubidosYandexDisk(array $configuracion, int $pagina = 1, int $limite = 21): array
+function obtenerPaginaUltimosSubidosYandexDisk(array $configuracion, int $pagina = 1, int $limite = 21, bool $forzarRemoto = false): array
 {
 	$token = yandexDiskApiKeyConfiguracion($configuracion);
 	$estado = estadoYandexDiskVacio($token !== '');
@@ -1478,20 +1511,31 @@ function obtenerPaginaUltimosSubidosYandexDisk(array $configuracion, int $pagina
 	$limite = max(1, min(200, $limite));
 	$offsetMultimedia = ($pagina - 1) * $limite;
 	$objetivo = $offsetMultimedia + $limite + 1;
-	$limiteRemoto = min(200, max($objetivo, $limite * 4));
+	$limiteRemoto = min(160, max($objetivo, $limite * 2));
 	$estado['limit'] = $limite;
 	$estado['offset'] = $offsetMultimedia;
 
 	$parametros = [
 		'limit' => $limiteRemoto,
-		'fields' => 'limit,items.name,items.path,items.type,items.mime_type,items.media_type,items.md5,items.sha256,items.size,items.modified,items.created,items.preview,items.public_url,items.resource_id,items.exif,items.sizes',
+		'fields' => 'limit,items.name,items.path,items.type,items.mime_type,items.media_type,items.md5,items.sha256,items.size,items.modified,items.created,items.preview,items.public_url,items.resource_id,items.exif',
 		'preview_size' => 'M',
 		'preview_crop' => 'false',
 	];
 	$parametrosCache = $parametros;
 	$parametrosCache['_token_hash'] = hash('sha256', $token);
 	$claveCache = claveCacheYandexDisk('resources-last-uploaded', $parametrosCache);
+	$parametrosCacheLegado = $parametrosCache;
+	$parametrosCacheLegado['limit'] = min(200, max($objetivo, $limite * 4));
+	$parametrosCacheLegado['fields'] = 'limit,items.name,items.path,items.type,items.mime_type,items.media_type,items.md5,items.sha256,items.size,items.modified,items.created,items.preview,items.public_url,items.resource_id,items.exif,items.sizes';
+	$claveCacheLegado = claveCacheYandexDisk('resources-last-uploaded', $parametrosCacheLegado);
 	$cache = leerCacheYandexDisk($claveCache);
+	if ($cache === null && $claveCacheLegado !== $claveCache):
+		$cache = leerCacheYandexDisk($claveCacheLegado);
+		if ($cache !== null):
+			$claveCache = $claveCacheLegado;
+		endif;
+	endif;
+	$cacheVencido = null;
 	if ($cache !== null):
 		$respuesta = [
 			'ok' => true,
@@ -1506,17 +1550,65 @@ function obtenerPaginaUltimosSubidosYandexDisk(array $configuracion, int $pagina
 			'created_at' => (int) ($cache['created_at'] ?? 0),
 		];
 	else:
-		$respuesta = yandexDiskPeticion('resources/last-uploaded', $parametros, $token, 20);
-		if ($respuesta['ok'] && is_array($respuesta['data'] ?? null)):
-			guardarCacheYandexDisk($claveCache, $respuesta['data']);
+		if (!$forzarRemoto):
+			$cacheVencido = leerCacheVencidoYandexDisk($claveCache);
+			if ($cacheVencido === null && $claveCacheLegado !== $claveCache):
+				$cacheVencido = leerCacheVencidoYandexDisk($claveCacheLegado);
+				if ($cacheVencido !== null):
+					$claveCache = $claveCacheLegado;
+				endif;
+			endif;
+		endif;
+		if ($cacheVencido !== null):
+			$respuesta = [
+				'ok' => true,
+				'status' => 200,
+				'error' => '',
+				'data' => $cacheVencido['data'],
+			];
 			$estado['cache'] = [
-				'hit' => false,
-				'stale' => false,
+				'hit' => true,
+				'stale' => true,
 				'key' => $claveCache,
-				'created_at' => time(),
+				'created_at' => (int) ($cacheVencido['created_at'] ?? 0),
 			];
 		else:
-			$estado['cache']['key'] = $claveCache;
+			$respuesta = yandexDiskPeticion('resources/last-uploaded', $parametros, $token, $forzarRemoto ? 12 : 5);
+		endif;
+		if ($respuesta['ok'] && is_array($respuesta['data'] ?? null)):
+			if ($cacheVencido === null):
+				guardarCacheYandexDisk($claveCache, $respuesta['data']);
+				$estado['cache'] = [
+					'hit' => false,
+					'stale' => false,
+					'key' => $claveCache,
+					'created_at' => time(),
+				];
+			endif;
+		elseif ($cacheVencido === null):
+			$cacheVencido = leerCacheVencidoYandexDisk($claveCache);
+			if ($cacheVencido === null && $claveCacheLegado !== $claveCache):
+				$cacheVencido = leerCacheVencidoYandexDisk($claveCacheLegado);
+				if ($cacheVencido !== null):
+					$claveCache = $claveCacheLegado;
+				endif;
+			endif;
+			if ($cacheVencido !== null):
+				$respuesta = [
+					'ok' => true,
+					'status' => 200,
+					'error' => '',
+					'data' => $cacheVencido['data'],
+				];
+				$estado['cache'] = [
+					'hit' => true,
+					'stale' => true,
+					'key' => $claveCache,
+					'created_at' => (int) ($cacheVencido['created_at'] ?? 0),
+				];
+			else:
+				$estado['cache']['key'] = $claveCache;
+			endif;
 		endif;
 	endif;
 
@@ -1562,7 +1654,7 @@ function obtenerPaginaUltimosSubidosYandexDisk(array $configuracion, int $pagina
 	return $estado;
 }
 
-function obtenerPaginaMultimediaYandexDisk(array $configuracion, string $ruta = '/', int $pagina = 1, int $limite = 21, ?array $primerLote = null, string $orden = 'name'): array
+function obtenerPaginaMultimediaYandexDisk(array $configuracion, string $ruta = '/', int $pagina = 1, int $limite = 21, ?array $primerLote = null, string $orden = 'name', bool $forzarRemoto = false): array
 {
 	$token = yandexDiskApiKeyConfiguracion($configuracion);
 	$estado = estadoYandexDiskVacio($token !== '');
@@ -1577,7 +1669,7 @@ function obtenerPaginaMultimediaYandexDisk(array $configuracion, string $ruta = 
 	$pagina = max(1, $pagina);
 	$limite = max(1, min(200, $limite));
 	if (ordenYandexDiskEsUltimosSubidos($orden)):
-		return obtenerPaginaUltimosSubidosYandexDisk($configuracion, $pagina, $limite);
+		return obtenerPaginaUltimosSubidosYandexDisk($configuracion, $pagina, $limite, $forzarRemoto);
 	endif;
 
 	$lote = 200;

@@ -23,6 +23,8 @@ datos/*.sqlite-*
 datos/*.db
 datos/*.db-*
 datos/yandex_cache/
+datos/duplicados_job_actual.json
+datos/duplicados_jobs/
 
 # Biblioteca multimedia y archivos operativos del DAM
 imgs/

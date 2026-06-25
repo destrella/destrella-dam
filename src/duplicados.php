@@ -415,6 +415,10 @@ function duplicadosGuardarHashLocal(PDO $pdo, string $ruta, string $tipo, array 
 		':actualizado' => time(),
 	]);
 
+	if (function_exists('catalogoActualizarFirmasMedio')):
+		catalogoActualizarFirmasMedio($ruta, $tipo, $hashes);
+	endif;
+
 	return true;
 }
 
@@ -429,6 +433,9 @@ function duplicadosEliminarHashLocal(string $ruta): void
 		try {
 			$stmt = $pdo->prepare('DELETE FROM archivos_hash WHERE ruta = :ruta');
 			$stmt->execute([':ruta' => duplicadosNormalizarRutaLocal($candidata)]);
+			if (function_exists('catalogoLimpiarFirmasMedio')):
+				catalogoLimpiarFirmasMedio($candidata);
+			endif;
 		} catch (PDOException $e) {
 			continue;
 		}
@@ -1666,7 +1673,7 @@ function duplicadosEjecutarTrabajo(string $id): void
 	]);
 
 	try {
-		$resultados = obtenerResultadosMultimedia($base, null, carpetasIgnoradasConfiguracion(), null);
+		$resultados = obtenerResultadosMultimediaEscaneo($base, null, carpetasIgnoradasConfiguracion(), null);
 	} catch (Throwable $e) {
 		duplicadosActualizarTrabajo($id, [
 			'estado' => 'error',

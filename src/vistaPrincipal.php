@@ -352,6 +352,11 @@ function renderizarSelectorOrdenYandexDisk(string $ordenActual): string
 function renderizarControlesYandexDisk(int $total, string $sufijoTotal, string $ruta, int $cantidadPagina, string $rutaYandex, int $ver, string $ordenActual): string
 {
 	$ordenActual = normalizarOrdenYandexDisk($ordenActual);
+	$actualizarUltimos = '';
+	if (ordenYandexDiskEsUltimosSubidos($ordenActual)):
+		$actualizarUrl = urlPanelYandexDisk($rutaYandex, $ordenActual) . '&ver=' . max(3, min(21, $ver)) . '&yandex_refresh=1';
+		$actualizarUltimos = '<a class="yandex-actualizar-ultimos" href="' . escaparHtml($actualizarUrl) . '">Actualizar últimos</a>';
+	endif;
 	return
 		'<div class="filtros-metadatos yandex-remoto-resumen">' .
 		'<span class="filtros-metadatos-resumen">' . $total . escaparHtml($sufijoTotal) . ' multimedia remota en ' . escaparHtml($ruta) . ' · ' . $cantidadPagina . ' en esta página</span>' .
@@ -363,6 +368,7 @@ function renderizarControlesYandexDisk(int $total, string $sufijoTotal, string $
 		'<button type="submit">Ordenar</button>' .
 		'</form>' .
 		'<span class="yandex-orden-actual">Orden actual: ' . escaparHtml(etiquetaOrdenYandexDisk($ordenActual)) . '</span>' .
+		$actualizarUltimos .
 		'</div>';
 }
 
@@ -530,6 +536,9 @@ function paginacionYandexDisk(int $paginaActual, int $totalPaginas, int $ver, st
 	if ($orden !== 'name'):
 		$base .= '&yandex_sort=' . rawurlencode($orden);
 	endif;
+	$paginaRangeId = 'yandex-pagina-range-' . substr(md5($estilo . '-' . $paginaActual . '-' . $totalPaginas . '-' . $ruta . '-' . $orden), 0, 10);
+	$verRangeId = 'yandex-ver-range-' . substr(md5('ver-' . $estilo . '-' . $paginaActual . '-' . $ver . '-' . $ruta . '-' . $orden), 0, 10);
+	$verMarkersId = 'yandex-ver-markers-' . substr(md5('markers-' . $verRangeId), 0, 10);
 
 	$html = '<nav class="paginación ' . escaparHtml($estilo) . '">';
 	if ($paginaActual > 1):
@@ -540,7 +549,18 @@ function paginacionYandexDisk(int $paginaActual, int $totalPaginas, int $ver, st
 		$html .= '<span style="opacity:0.3">⏮️ ◀️</span>';
 	endif;
 
-	$html .= ' <span>' . estilizarNúmeros($paginaActual) . '╱' . estilizarNúmeros($totalPaginas) . '</span> ';
+	$html .=
+		' <form method="get" class="paginacion-pagina-form" data-paginacion-form="pagina">' .
+		'<input type="hidden" name="panel" value="yandex">' .
+		'<input type="hidden" name="ver" value="' . escaparHtml((string) $ver) . '">' .
+		'<input type="hidden" name="yandex_path" value="' . escaparHtml($ruta) . '">' .
+		($orden !== 'name' ? '<input type="hidden" name="yandex_sort" value="' . escaparHtml($orden) . '">' : '') .
+		'<label class="paginacion-rango-pagina" for="' . escaparHtml($paginaRangeId) . '">' .
+		'<span class="paginacion-rango-etiqueta">Página <output for="' . escaparHtml($paginaRangeId) . '" data-paginacion-pagina-valor>' . $paginaActual . '</output>/' . $totalPaginas . '</span>' .
+		'<input id="' . escaparHtml($paginaRangeId) . '" type="range" name="pagina" min="1" max="' . $totalPaginas . '" step="1" value="' . $paginaActual . '" data-paginacion-pagina-range>' .
+		'</label>' .
+		'<button type="submit" class="paginacion-ir">Ir</button>' .
+		'</form> ';
 
 	if ($totalPaginas > $paginaActual):
 		$html .=
@@ -551,19 +571,14 @@ function paginacionYandexDisk(int $paginaActual, int $totalPaginas, int $ver, st
 	endif;
 
 	$html .=
-		' <form method="get" style="display:inline-block;vertical-align:middle;margin-left:2rem;">' .
+		' <form method="get" class="paginacion-ver-form">' .
 		'<input type="hidden" name="panel" value="yandex">' .
 		'<input type="hidden" name="yandex_path" value="' . escaparHtml($ruta) . '">' .
 		($orden !== 'name' ? '<input type="hidden" name="yandex_sort" value="' . escaparHtml($orden) . '">' : '') .
-		'📄<select name="pagina">';
-	for ($i = 1; $i <= $totalPaginas; $i++):
-		$html .= '<option value="' . $i . '"' . ($i === $paginaActual ? ' selected' : '') . '>' . $i . '</option>';
-	endfor;
-	$html .=
-		'</select> ' .
+		'<input type="hidden" name="pagina" value="' . $paginaActual . '">' .
 		'<span class="slider">' .
-		'<input type="range" name="ver" min="3" max="21" step="1" value="' . $ver . '" list="markers"/>' .
-		'<datalist id="markers">';
+		'<input id="' . escaparHtml($verRangeId) . '" type="range" name="ver" min="3" max="21" step="1" value="' . $ver . '" list="' . escaparHtml($verMarkersId) . '"/>' .
+		'<datalist id="' . escaparHtml($verMarkersId) . '">';
 	for ($i = 3; $i <= 21; $i += 3):
 		$html .= '<option value="' . $i . '">' . $i . '</option>';
 	endfor;

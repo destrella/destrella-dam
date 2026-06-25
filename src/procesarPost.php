@@ -89,7 +89,7 @@ function candidatosDirectoriosLimpieza(string $directorio, string $rootPermitido
 	return $directorios;
 }
 
-function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, bool $mantenerEnIndice = true, bool $permitirMismoDirectorio = false): array
+function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, bool $mantenerEnIndice = true, bool $permitirMismoDirectorio = false, bool $limpiarIndicePalabras = true): array
 {
 	$directorioOrigen = dirname($rutaOrigen);
 	if (!is_dir($directorioDestino) && !mkdir($directorioDestino, 0755, true)):
@@ -123,6 +123,17 @@ function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, 
 		duplicadosEliminarHashLocal($rutaOrigen);
 		duplicadosEliminarHashLocal($rutaDestino);
 	endif;
+	if (function_exists('catalogoEliminarMedio')):
+		catalogoEliminarMedio($rutaOrigen);
+	endif;
+	if (function_exists('catalogoRegistrarArchivo')):
+		$tipoCatalogo = tipoMultimediaDesdeRuta($rutaDestino);
+		if ($mantenerEnIndice && $tipoCatalogo !== null):
+			catalogoRegistrarArchivo($rutaDestino, $tipoCatalogo);
+		elseif (function_exists('catalogoEliminarMedio')):
+			catalogoEliminarMedio($rutaDestino);
+		endif;
+	endif;
 
 	if ($mantenerEnIndice):
 		$tipoIndice = tipoMultimediaDesdeRuta($rutaDestino);
@@ -133,13 +144,15 @@ function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, 
 		if (!$indiceMovido && $tipoIndice !== null):
 			actualizarIndicePalabrasClave([[$rutaDestino, $tipoIndice]], 0, true);
 		endif;
-		if (!$indiceMovido):
+		if (!$indiceMovido && $limpiarIndicePalabras):
 			limpiarPalabrasClaveSinUso();
 		endif;
 	else:
 		eliminarIndicePalabrasClaveArchivo($rutaOrigen, false);
 		eliminarIndicePalabrasClaveArchivo($rutaDestino, false);
-		limpiarPalabrasClaveSinUso();
+		if ($limpiarIndicePalabras):
+			limpiarPalabrasClaveSinUso();
+		endif;
 	endif;
 
 	// Limpiar directorios vacíos. Si el origen está dentro del proyecto,
@@ -156,7 +169,7 @@ function moverArchivoADirectorio(string $rutaOrigen, string $directorioDestino, 
 	return resultadoOperacionArchivo(true, $rutaOrigen, $rutaDestino, '', $directorioOrigen, $directorioEliminado ?: null, $directoriosEliminados);
 }
 
-function archivarArchivo(string $rutaOrigen, array $configuracion): array
+function archivarArchivo(string $rutaOrigen, array $configuracion, bool $limpiarIndicePalabras = true): array
 {
 	$ruta = proyectoRaiz() . DIRECTORY_SEPARATOR . rtrim($configuracion['ruta_archivar'] ?? 'listas', '/');
 	$fecha = '';
@@ -174,13 +187,13 @@ function archivarArchivo(string $rutaOrigen, array $configuracion): array
 		$ruta .= DIRECTORY_SEPARATOR . $fecha;
 	endif;
 
-	return moverArchivoADirectorio($rutaOrigen, $ruta, true, true);
+	return moverArchivoADirectorio($rutaOrigen, $ruta, true, true, $limpiarIndicePalabras);
 }
 
-function descartarArchivo(string $rutaOrigen): array
+function descartarArchivo(string $rutaOrigen, bool $limpiarIndicePalabras = true): array
 {
 	$directorioBasura = proyectoRaiz() . DIRECTORY_SEPARATOR . '.basura';
-	return moverArchivoADirectorio($rutaOrigen, $directorioBasura, false, true);
+	return moverArchivoADirectorio($rutaOrigen, $directorioBasura, false, true, $limpiarIndicePalabras);
 }
 
 function normalizarSubcarpetaDestino(mixed $valor): ?string
@@ -289,13 +302,14 @@ if (array_key_exists('operacion_lote', $json)):
 
 	$configuracion = cargarConfiguracion();
 	$resultadosOperacion = [];
+	$limpiarIndiceDiferido = count($rutas) > 1;
 	foreach ($rutas as $ruta):
 		if ($operacion === 'mover'):
-			$resultadosOperacion[] = moverArchivoADirectorio($ruta, $destinoMover, true, false);
+			$resultadosOperacion[] = moverArchivoADirectorio($ruta, $destinoMover, true, false, !$limpiarIndiceDiferido);
 		elseif ($operacion === 'archivar'):
-			$resultadosOperacion[] = archivarArchivo($ruta, $configuracion);
+			$resultadosOperacion[] = archivarArchivo($ruta, $configuracion, !$limpiarIndiceDiferido);
 		else:
-			$resultadoDescarte = descartarArchivo($ruta);
+			$resultadoDescarte = descartarArchivo($ruta, !$limpiarIndiceDiferido);
 			if ($resultadoDescarte['ok']):
 				agregarEtiquetasFinder($ruta, 'DAM PHP', 'Descartado');
 			endif;
@@ -304,6 +318,9 @@ if (array_key_exists('operacion_lote', $json)):
 	endforeach;
 
 	$ok = array_values(array_filter($resultadosOperacion, static fn($resultado) => !empty($resultado['ok'])));
+	if ($limpiarIndiceDiferido && !empty($ok)):
+		limpiarPalabrasClaveSinUso();
+	endif;
 	$errores = array_values(array_filter($resultadosOperacion, static fn($resultado) => empty($resultado['ok'])));
 	echo json_encode([
 		'ok' => !empty($ok) && empty($errores),
@@ -413,7 +430,7 @@ if (array_key_exists('relleno_pagina', $json)):
 		exit;
 	endif;
 
-	echo crearBloque($resultados[$indice][0], $id, $resultados[$indice][1]);
+	echo crearBloqueLigero($resultados[$indice][0], $id, $resultados[$indice][1]);
 elseif (array_key_exists('estado_metadatos', $json)):
 	$ruta = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
 	$id = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($json['id'] ?? ''));
@@ -693,6 +710,12 @@ elseif (array_key_exists('subject', $json)):
 	if (is_file($rutaMetadatos)):
 		if (function_exists('duplicadosEliminarHashLocal')):
 			duplicadosEliminarHashLocal($rutaMetadatos);
+		endif;
+		if (function_exists('catalogoLimpiarFirmasMedio')):
+			catalogoLimpiarFirmasMedio($rutaMetadatos);
+		endif;
+		if (function_exists('catalogoRegistrarArchivo')):
+			catalogoRegistrarArchivo($rutaMetadatos, $mediaMetadatos);
 		endif;
 		actualizarIndicePalabrasClave([[$rutaMetadatos, $mediaMetadatos]], 0, true);
 		limpiarPalabrasClaveSinUso();

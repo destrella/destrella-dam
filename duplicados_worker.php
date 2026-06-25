@@ -5,6 +5,7 @@ if (PHP_SAPI !== 'cli'):
 endif;
 
 require_once __DIR__ . '/src/funciones.php';
+require_once __DIR__ . '/src/catalogo.php';
 require_once __DIR__ . '/src/vistaPrincipal.php';
 require_once __DIR__ . '/src/yandexDisk.php';
 require_once __DIR__ . '/src/duplicados.php';

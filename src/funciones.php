@@ -2645,6 +2645,66 @@ function mostrarImagen($ruta, $id, string $imageSize = '', $svg = '')
 	return $html;
 }
 
+function estadoIndicadoresArticuloLigero(string $ruta): array
+{
+	if ($ruta === '' || !is_file($ruta)):
+		return [];
+	endif;
+
+	$estado = evaluarEstadoFiltrosMetadatos($ruta, true, true);
+
+	return [
+		'ia' => !empty($estado['ia']),
+		'geo' => !empty($estado['geo']),
+		'xattr' => !empty($estado['xattr']),
+		'duplicado' => !empty($estado['duplicadas']),
+		'sugerido' => !empty($estado['sugerencias']),
+		'advertencia' => !empty($estado['tracking']),
+	];
+}
+
+function atributosIndicadoresArticuloLigero(string $ruta): string
+{
+	$estado = estadoIndicadoresArticuloLigero($ruta);
+	if (empty($estado)):
+		return '';
+	endif;
+
+	$atributos = '';
+	foreach ($estado as $clave => $activo):
+		if (!$activo):
+			continue;
+		endif;
+		$atributos .= ' data-indicador-' . htmlspecialchars((string) $clave, ENT_QUOTES, 'UTF-8') . '="1"';
+	endforeach;
+
+	return $atributos;
+}
+
+function crearBloqueLigero($ruta, $id, $tipo = 'img')
+{
+	if (empty($ruta) || !is_file($ruta)):
+		return FALSE;
+	endif;
+
+	$tipo = $tipo === 'vid' ? 'vid' : (tipoMultimediaDesdeRuta((string) $ruta) ?? 'img');
+	$rutaAttr = htmlspecialchars((string) $ruta, ENT_QUOTES, 'UTF-8');
+	$tipoAttr = htmlspecialchars($tipo, ENT_QUOTES, 'UTF-8');
+	$atributosIndicadores = atributosIndicadoresArticuloLigero((string) $ruta);
+	$html =
+		'<article id="art_' . $id . '" data-panel-id="pie_' . $id . '" data-detalle-diferido="1" data-detalle-ruta="' . $rutaAttr . '" data-detalle-media="' . $tipoAttr . '"' . $atributosIndicadores . ' tabindex="0">';
+
+	if ($tipo === 'vid'):
+		$html .= mostrarVideo($ruta, $id);
+	else:
+		$html .= mostrarImagen($ruta, $id);
+	endif;
+
+	$html .= '</article>';
+
+	return $html;
+}
+
 /**
  * Obtiene el timestamp del keyframe más útil para un poster de video.
  *
@@ -4955,6 +5015,22 @@ function obtenerResultadosMultimedia(
 	array $omitir,
 	?string $media = null
 ): array {
+	if (function_exists('catalogoResultadosMultimedia')):
+		$resultadosCatalogo = catalogoResultadosMultimedia($rutaIterador, $unarchivo, $omitir, $media);
+		if (is_array($resultadosCatalogo)):
+			return $resultadosCatalogo;
+		endif;
+	endif;
+
+	return obtenerResultadosMultimediaEscaneo($rutaIterador, $unarchivo, $omitir, $media);
+}
+
+function obtenerResultadosMultimediaEscaneo(
+	string $rutaIterador,
+	?string $unarchivo,
+	array $omitir,
+	?string $media = null
+): array {
 	$filtrarFotos = false;
 	$filtrarVideos = false;
 
@@ -5208,6 +5284,32 @@ function etiquetasFiltrosMetadatos(): array
 	];
 }
 
+function asegurarColumnasSqlite(PDO $pdo, string $tabla, array $columnas): void
+{
+	try {
+		$existentes = [];
+		$stmt = $pdo->query('PRAGMA table_info(' . $tabla . ')');
+		foreach (($stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : []) as $columna):
+			$nombre = (string) ($columna['name'] ?? '');
+			if ($nombre !== ''):
+				$existentes[$nombre] = true;
+			endif;
+		endforeach;
+
+		foreach ($columnas as $nombre => $definicion):
+			if (isset($existentes[$nombre])):
+				continue;
+			endif;
+			if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $nombre)):
+				continue;
+			endif;
+			$pdo->exec('ALTER TABLE ' . $tabla . ' ADD COLUMN ' . $nombre . ' ' . $definicion);
+		endforeach;
+	} catch (\PDOException $e) {
+		return;
+	}
+}
+
 function conectarBaseFiltrosMetadatos(): ?PDO
 {
 	static $pdo = null;
@@ -5231,16 +5333,33 @@ function conectarBaseFiltrosMetadatos(): ?PDO
 				mtime INTEGER NOT NULL,
 				tamano INTEGER NOT NULL,
 				xattr_eval INTEGER NOT NULL DEFAULT 0,
+				ia_eval INTEGER NOT NULL DEFAULT 0,
+				ia INTEGER NOT NULL DEFAULT 0,
 				geo INTEGER NOT NULL DEFAULT 0,
 				regiones INTEGER NOT NULL DEFAULT 0,
 				rotacion INTEGER NOT NULL DEFAULT 0,
 				palabras INTEGER NOT NULL DEFAULT 0,
 				sugerencias INTEGER NOT NULL DEFAULT 0,
 				duplicadas INTEGER NOT NULL DEFAULT 0,
+				xattr INTEGER NOT NULL DEFAULT 0,
 				tracking INTEGER NOT NULL DEFAULT 0,
 				actualizado INTEGER NOT NULL DEFAULT 0
 			)
 		");
+		asegurarColumnasSqlite($pdo, 'estados', [
+			'xattr_eval' => 'INTEGER NOT NULL DEFAULT 0',
+			'ia_eval' => 'INTEGER NOT NULL DEFAULT 0',
+			'ia' => 'INTEGER NOT NULL DEFAULT 0',
+			'geo' => 'INTEGER NOT NULL DEFAULT 0',
+			'regiones' => 'INTEGER NOT NULL DEFAULT 0',
+			'rotacion' => 'INTEGER NOT NULL DEFAULT 0',
+			'palabras' => 'INTEGER NOT NULL DEFAULT 0',
+			'sugerencias' => 'INTEGER NOT NULL DEFAULT 0',
+			'duplicadas' => 'INTEGER NOT NULL DEFAULT 0',
+			'xattr' => 'INTEGER NOT NULL DEFAULT 0',
+			'tracking' => 'INTEGER NOT NULL DEFAULT 0',
+			'actualizado' => 'INTEGER NOT NULL DEFAULT 0',
+		]);
 		$pdo->exec("
 			CREATE TABLE IF NOT EXISTS archivos_palabras_clave (
 				ruta TEXT PRIMARY KEY,
@@ -5462,6 +5581,10 @@ function guardarIndicePalabrasClaveArchivo(
 		endif;
 		return false;
 	}
+
+	if (function_exists('catalogoActualizarPalabrasMedio')):
+		catalogoActualizarPalabrasMedio($ruta, $tipo, $palabras);
+	endif;
 
 	return true;
 }
@@ -5819,7 +5942,7 @@ function sincronizarIndicePalabrasClaveCompleto(
 		'total' => 0,
 		'mensaje' => 'Buscando archivos...',
 	]);
-	$resultados = obtenerResultadosMultimedia($root, null, $omitir, null);
+	$resultados = obtenerResultadosMultimediaEscaneo($root, null, $omitir, null);
 	$sincronizacionCompleta = $limite === 0;
 	if ($limite > 0):
 		$resultados = array_slice($resultados, 0, $limite);
@@ -5922,7 +6045,7 @@ function sincronizarIndicePalabrasClaveCompleto(
 	];
 }
 
-function leerEstadoFiltrosMetadatosCache(string $ruta, bool $requiereXattr = false): ?array
+function leerEstadoFiltrosMetadatosCache(string $ruta, bool $requiereXattr = false, bool $requiereIa = false): ?array
 {
 	$pdo = conectarBaseFiltrosMetadatos();
 	if (!$pdo || !is_file($ruta)):
@@ -5942,17 +6065,20 @@ function leerEstadoFiltrosMetadatosCache(string $ruta, bool $requiereXattr = fal
 		|| (int) $fila['mtime'] !== filemtime($ruta)
 		|| (int) $fila['tamano'] !== filesize($ruta)
 		|| ($requiereXattr && (int) $fila['xattr_eval'] !== 1)
+		|| ($requiereIa && (int) ($fila['ia_eval'] ?? 0) !== 1)
 	):
 		return null;
 	endif;
 
 	return [
+		'ia' => (bool) ($fila['ia'] ?? false),
 		'geo' => (bool) $fila['geo'],
 		'regiones' => (bool) $fila['regiones'],
 		'rotacion' => (bool) $fila['rotacion'],
 		'palabras' => (bool) $fila['palabras'],
 		'sugerencias' => (bool) $fila['sugerencias'],
 		'duplicadas' => (bool) $fila['duplicadas'],
+		'xattr' => (bool) ($fila['xattr'] ?? false),
 		'tracking' => (bool) $fila['tracking'],
 	];
 }
@@ -5967,20 +6093,23 @@ function guardarEstadoFiltrosMetadatosCache(string $ruta, array $estado, bool $x
 	try {
 		$stmt = $pdo->prepare("
 			INSERT INTO estados (
-				ruta, mtime, tamano, xattr_eval, geo, regiones, rotacion, palabras, sugerencias, duplicadas, tracking, actualizado
+				ruta, mtime, tamano, xattr_eval, ia_eval, ia, geo, regiones, rotacion, palabras, sugerencias, duplicadas, xattr, tracking, actualizado
 			) VALUES (
-				:ruta, :mtime, :tamano, :xattr_eval, :geo, :regiones, :rotacion, :palabras, :sugerencias, :duplicadas, :tracking, :actualizado
+				:ruta, :mtime, :tamano, :xattr_eval, :ia_eval, :ia, :geo, :regiones, :rotacion, :palabras, :sugerencias, :duplicadas, :xattr, :tracking, :actualizado
 			)
 			ON CONFLICT(ruta) DO UPDATE SET
 				mtime = excluded.mtime,
 				tamano = excluded.tamano,
 				xattr_eval = excluded.xattr_eval,
+				ia_eval = excluded.ia_eval,
+				ia = excluded.ia,
 				geo = excluded.geo,
 				regiones = excluded.regiones,
 				rotacion = excluded.rotacion,
 				palabras = excluded.palabras,
 				sugerencias = excluded.sugerencias,
 				duplicadas = excluded.duplicadas,
+				xattr = excluded.xattr,
 				tracking = excluded.tracking,
 				actualizado = excluded.actualizado
 		");
@@ -5989,15 +6118,21 @@ function guardarEstadoFiltrosMetadatosCache(string $ruta, array $estado, bool $x
 			':mtime' => filemtime($ruta),
 			':tamano' => filesize($ruta),
 			':xattr_eval' => $xattrEval ? 1 : 0,
+			':ia_eval' => 1,
+			':ia' => !empty($estado['ia']) ? 1 : 0,
 			':geo' => !empty($estado['geo']) ? 1 : 0,
 			':regiones' => !empty($estado['regiones']) ? 1 : 0,
 			':rotacion' => !empty($estado['rotacion']) ? 1 : 0,
 			':palabras' => !empty($estado['palabras']) ? 1 : 0,
 			':sugerencias' => !empty($estado['sugerencias']) ? 1 : 0,
 			':duplicadas' => !empty($estado['duplicadas']) ? 1 : 0,
+			':xattr' => !empty($estado['xattr']) ? 1 : 0,
 			':tracking' => !empty($estado['tracking']) ? 1 : 0,
 			':actualizado' => time(),
 		]);
+		if (function_exists('catalogoActualizarEstadoMetadatos')):
+			catalogoActualizarEstadoMetadatos($ruta, $estado);
+		endif;
 	} catch (\PDOException $e) {
 		return;
 	}
@@ -6138,6 +6273,12 @@ function calcularEstadoFiltrosMetadatos(string $ruta, array $meta, bool $conside
 	$palabrasClave = obtenerTextoPalabrasClaveDesdeMeta($meta);
 	$orientacion = normalizarOrientacionExif($meta['Orientation'] ?? 1);
 	$rotacion = normalizarOrientacionExif($meta['Rotation'] ?? 1);
+	$tieneMetadatosIA =
+		isset($meta['Parameters'])
+		|| isset($meta['Invokeai_metadata'])
+		|| isset($meta['Invokeai_graph'])
+		|| isset($meta['Invokeai_workflow'])
+		|| isset($meta['Prompt']);
 	$camposOrigen = [
 		textoMetadato($meta['Description'] ?? ''),
 		textoMetadato($meta['UserComment'] ?? ''),
@@ -6156,8 +6297,11 @@ function calcularEstadoFiltrosMetadatos(string $ruta, array $meta, bool $conside
 			break;
 		endif;
 	endforeach;
+	$metaExtendido = $considerarXattr ? trim((string) leerMetadatoExtendido($ruta), '" ') : '';
+	$tieneXattr = $metaExtendido !== '' && !str_contains($metaExtendido, '(null)');
 
 	return [
+		'ia' => $tieneMetadatosIA,
 		'geo' => isset($meta['GPSLatitude'], $meta['GPSLongitude'])
 			&& textoMetadato($meta['GPSLatitude']) !== ''
 			&& textoMetadato($meta['GPSLongitude']) !== '',
@@ -6166,6 +6310,7 @@ function calcularEstadoFiltrosMetadatos(string $ruta, array $meta, bool $conside
 		'palabras' => !empty(normalizarPalabrasClave($palabrasClave)),
 		'sugerencias' => tieneSugerenciasMetadatos($ruta, $meta, $palabrasClave, $considerarXattr),
 		'duplicadas' => tienePalabrasClaveDuplicadas($palabrasClave),
+		'xattr' => $tieneXattr,
 		'tracking' => $tieneCampoTracking || detectarRedSocialEnTexto(implode(' ', $camposOrigen)) !== '',
 	];
 }
@@ -6175,15 +6320,15 @@ function calcularEstadoFiltrosMetadatos(string $ruta, array $meta, bool $conside
  *
  * @return array<string, bool>
  */
-function evaluarEstadoFiltrosMetadatos(string $ruta, bool $requiereXattr = false): array
+function evaluarEstadoFiltrosMetadatos(string $ruta, bool $requiereXattr = false, bool $requiereIa = false): array
 {
 	static $cache = [];
-	$cacheKey = $ruta . '|' . ($requiereXattr ? '1' : '0');
+	$cacheKey = $ruta . '|' . ($requiereXattr ? '1' : '0') . '|' . ($requiereIa ? '1' : '0');
 	if (isset($cache[$cacheKey])):
 		return $cache[$cacheKey];
 	endif;
 
-	$estadoCache = leerEstadoFiltrosMetadatosCache($ruta, $requiereXattr);
+	$estadoCache = leerEstadoFiltrosMetadatosCache($ruta, $requiereXattr, $requiereIa);
 	if ($estadoCache !== null):
 		$cache[$cacheKey] = $estadoCache;
 		return $estadoCache;
@@ -6200,7 +6345,7 @@ function evaluarEstadoFiltrosMetadatos(string $ruta, bool $requiereXattr = false
 	return $estado;
 }
 
-function calentarCacheFiltrosMetadatos(array $resultados, bool $requiereXattr = false): void
+function calentarCacheFiltrosMetadatos(array $resultados, bool $requiereXattr = false, bool $requiereIa = false): void
 {
 	$pendientes = [];
 	foreach ($resultados as $resultado):
@@ -6208,7 +6353,7 @@ function calentarCacheFiltrosMetadatos(array $resultados, bool $requiereXattr = 
 		if ($ruta === '' || !is_file($ruta)):
 			continue;
 		endif;
-		if (leerEstadoFiltrosMetadatosCache($ruta, $requiereXattr) === null):
+		if (leerEstadoFiltrosMetadatosCache($ruta, $requiereXattr, $requiereIa) === null):
 			$pendientes[] = $ruta;
 		endif;
 	endforeach;
@@ -6755,14 +6900,22 @@ function paginacion($página_actual, $total_de_paginas, $ver = 0, $ruta = '', $e
 			break;
 	endswitch;
 
+	$total_de_paginas = max(1, (int) $total_de_paginas);
+	$página_actual = max(1, min((int) $página_actual, $total_de_paginas));
 	$html = '<nav class="paginación ' . $estilo . '">';
 	$verparam = '';
 	if ((bool) $ver):
+		$ver = (int) $ver;
 		$verparam = '&ver=' . $ver;
 	else:
-		$ver = '3';
+		$ver = 3;
 		$verparam = '&ver=3';
 	endif;
+
+	$paginaRangeId = 'pagina-range-' . substr(md5($estilo . '-' . $página_actual . '-' . $total_de_paginas . '-' . $ruta), 0, 10);
+	$verRangeId = 'ver-range-' . substr(md5('ver-' . $estilo . '-' . $página_actual . '-' . $ver . '-' . $ruta), 0, 10);
+	$verMarkersId = 'ver-markers-' . substr(md5('markers-' . $estilo . '-' . $verRangeId), 0, 10);
+
 	if (1 < $página_actual):
 		$html .=
 			'<a href="?pagina=1' . $verparam . $mediaparam . $rutaparam . $filtroparam . $palabraparam . '" style="text-decoration:none;" title="Inicio">' .
@@ -6772,7 +6925,21 @@ function paginacion($página_actual, $total_de_paginas, $ver = 0, $ruta = '', $e
 	else:
 		$html .= '<span style="opacity:0.3">⏮️ ◀️</span>';
 	endif;
-	$html .= ' <span>' . estilizarNúmeros($página_actual) . '╱' . estilizarNúmeros($total_de_paginas) . '</span> ';
+
+	$html .=
+		' <form method="get" class="paginacion-pagina-form" data-paginacion-form="pagina">' .
+		'<label class="paginacion-rango-pagina" for="' . $paginaRangeId . '">' .
+		'<span class="paginacion-rango-etiqueta">Página <output for="' . $paginaRangeId . '" data-paginacion-pagina-valor>' . $página_actual . '</output>/' . $total_de_paginas . '</span>' .
+		'<input id="' . $paginaRangeId . '" type="range" name="pagina" min="1" max="' . $total_de_paginas . '" step="1" value="' . $página_actual . '" data-paginacion-pagina-range>' .
+		'</label>' .
+		'<input type="hidden" name="ver" value="' . htmlspecialchars((string) $ver, ENT_QUOTES, 'UTF-8') . '">' .
+		$mediahidden .
+		$filtrohidden .
+		$rutahidden .
+		$palabrahidden .
+		'<button type="submit" class="paginacion-ir">Ir</button>' .
+		'</form> ';
+
 	if ($total_de_paginas > $página_actual):
 		$html .=
 			'<a href="?pagina=' . ($página_actual + 1) . $verparam . $mediaparam . $rutaparam . $filtroparam . $palabraparam . '" style="text-decoration:none;" title="Siguiente">' .
@@ -6783,24 +6950,12 @@ function paginacion($página_actual, $total_de_paginas, $ver = 0, $ruta = '', $e
 		$html .= '<span style="opacity:0.3">▶️ ⏭️</span>';
 	endif;
 	$html .=
-		' <form method="get" style="display:inline-block;vertical-align:middle;margin-left:2rem;">' .
-		'📄<select name="pagina">';
-	for ($i = 1; $i <= $total_de_paginas; $i++):
-		if ($i == $página_actual):
-			$selected = ' selected';
-		else:
-			$selected = '';
-		endif;
-		$html .= '<option value="' . $i . '" ' . $selected . '>';
-		$html .= $i;
-		$html .= '</option>';
-	endfor;
-	$html .=
-		'</select> ' .
+		' <form method="get" class="paginacion-ver-form">' .
+		'<input type="hidden" name="pagina" value="' . $página_actual . '">' .
 		'<span class="slider">' .
-		'<input type="range" name="ver" min="3" max="21" step="1" value="' . $ver . '" list="markers"/>';
+		'<input id="' . $verRangeId . '" type="range" name="ver" min="3" max="21" step="1" value="' . $ver . '" list="' . $verMarkersId . '"/>';
 	$html .=
-		'<datalist id="markers">';
+		'<datalist id="' . $verMarkersId . '">';
 	for ($i = 3; $i <= 21; $i += 3):
 		$html .= '<option value="' . $i . '">';
 		$html .= $i;

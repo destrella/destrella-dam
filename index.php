@@ -3,6 +3,7 @@ ini_set("pcre.jit", "0");
 set_time_limit(300);
 
 require_once "src/funciones.php";
+require_once "src/catalogo.php";
 require_once "src/vistaPrincipal.php";
 require_once "src/yandexDisk.php";
 require_once "src/duplicados.php";
@@ -37,6 +38,8 @@ $panelDuplicadosActivo = $panelSolicitado === 'duplicados' && $palabraClaveActiv
 $panelYandexActivo = $panelSolicitado === 'yandex' && $yandexDiskConfigurado && $palabraClaveActiva === '';
 $panelPalabrasActivo = !$panelYandexActivo && !$panelDuplicadosActivo && ($palabraClaveActiva !== '' || $panelSolicitado === 'palabras');
 $panelCarpetasActivo = !$panelYandexActivo && !$panelDuplicadosActivo && !$panelPalabrasActivo;
+$panelYandexUltimosSubidos = $panelYandexActivo && ordenYandexDiskEsUltimosSubidos($ordenYandexDisk);
+$forzarYandexRemoto = $panelYandexUltimosSubidos && !empty($_GET['yandex_refresh']);
 $modoYandexSolicitado = $panelYandexActivo;
 if ($unarchivo):
 	// Intentar resolver contra la raíz de navegación (home),
@@ -158,10 +161,13 @@ $indice_final = min($indice_inicial + $elementos_por_pagina, $total_de_elementos
 
 $resultados_paginados = array_slice($resultados, $indice_inicial, $elementos_por_pagina);
 
+if (!$panelYandexActivo && !$panelDuplicadosActivo && !empty($resultados_paginados)):
+	calentarCacheFiltrosMetadatos($resultados_paginados, true, true);
+endif;
 
 $i = 1;
 foreach ($resultados_paginados as $archivo):
-	$html .= crearBloque($archivo[0], $i, $archivo[1]);
+	$html .= crearBloqueLigero($archivo[0], $i, $archivo[1]);
 	$i++;
 endforeach;
 
@@ -185,10 +191,14 @@ else:
 	$parametroMedia = '';
 endif;
 $parametrosFiltrosOcultos = inputsOcultosFiltrosMetadatos($filtrosMetadatos);
-$estadoYandexDiskNavegacion = $panelYandexActivo
-	? obtenerDirectorioYandexDisk($configuracion, $rutaYandexDisk, 200, 0)
-	: [];
-if ($panelYandexActivo):
+$estadoYandexDiskNavegacion = [];
+if ($panelYandexActivo && $panelYandexUltimosSubidos):
+	$estadoYandexDiskNavegacion = estadoYandexDiskVacio(true);
+	$estadoYandexDiskNavegacion['ok'] = true;
+	$estadoYandexDiskNavegacion['ruta'] = '/';
+	$estadoYandexDiskNavegacion['orden'] = 'name';
+elseif ($panelYandexActivo):
+	$estadoYandexDiskNavegacion = obtenerDirectorioYandexDisk($configuracion, $rutaYandexDisk, 200, 0);
 	$estadoYandexDiskNavegacion['espacio'] = obtenerEspacioYandexDisk($configuracion);
 endif;
 $estadoYandexDisk = $panelYandexActivo
@@ -198,7 +208,8 @@ $estadoYandexDisk = $panelYandexActivo
 		$paginaYandexSolicitada,
 		$elementosPorPaginaYandex,
 		$ordenYandexDisk === 'name' ? $estadoYandexDiskNavegacion : null,
-		$ordenYandexDisk
+		$ordenYandexDisk,
+		$forzarYandexRemoto
 	)
 	: [];
 if (($estadoYandexDisk['ok'] ?? false) && $panelYandexActivo):
@@ -212,7 +223,8 @@ if (($estadoYandexDisk['ok'] ?? false) && $panelYandexActivo):
 			1,
 			$elementosPorPaginaYandex,
 			$ordenYandexDisk === 'name' ? $estadoYandexDiskNavegacion : null,
-			$ordenYandexDisk
+			$ordenYandexDisk,
+			$forzarYandexRemoto
 		);
 	endif;
 endif;
@@ -357,7 +369,7 @@ endif;
 		((isset($_GET['debug']) && $_GET['debug'] === '1') ? '<details class="resultados-debug"><summary>Resultados</summary>' . var_dump_pre($panelYandexActivo ? $estadoYandexDisk : ($panelDuplicadosActivo ? $estadoDuplicados : $resultados)) . '</details>' : '') .
 		'</section>' .
 		'<aside class="col-detalle" aria-label="Metadatos">' .
-		'<div class="panel-detalle-placeholder">Selecciona un archivo</div>' .
+		'<div class="panel-detalle-placeholder"><div class="panel-detalle-mensaje panel-detalle-mensaje-info" role="status" aria-live="polite"><span class="panel-detalle-mensaje-icono" aria-hidden="true">i</span><div class="panel-detalle-mensaje-cuerpo">Selecciona un archivo para ver su información</div></div></div>' .
 		'<div id="panelDetalleContenido" class="panel-detalle-contenido"></div>' .
 		'</aside>' .
 		'<button type="button" id="alternar-carpetas" class="alternar-carpetas" aria-controls="columnaCarpetas" aria-expanded="true" title="Colapsar carpetas">‹</button>' .

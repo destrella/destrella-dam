@@ -235,12 +235,12 @@ function solicitarBloqueMetadatos(ruta, media, despuesDeArticuloId){
 
 function obtenerParametrosVistaActual(){
 	const params = new URLSearchParams(window.location.search);
-	const formularioPaginacion = document.querySelector('.col-contenido > .paginación.condensado form')
-		|| document.querySelector('.paginación form');
-	const controlPagina = formularioPaginacion?.querySelector('select[name="pagina"]');
-	const controlVer = formularioPaginacion?.querySelector('input[name="ver"]');
-	const controlMedia = formularioPaginacion?.querySelector('[name="media"]');
-	const controlRuta = formularioPaginacion?.querySelector('input[name="ruta"]');
+	const paginador = document.querySelector('.col-contenido > .paginación.condensado')
+		|| document.querySelector('.paginación');
+	const controlPagina = paginador?.querySelector('[name="pagina"]');
+	const controlVer = paginador?.querySelector('input[name="ver"]');
+	const controlMedia = paginador?.querySelector('[name="media"]');
+	const controlRuta = paginador?.querySelector('input[name="ruta"]');
 	const pagina = parseInt(params.get('pagina') || controlPagina?.value || '1', 10);
 	const ver = parseInt(params.get('ver') || controlVer?.value || '6', 10);
 	const filtros = {};
@@ -693,6 +693,25 @@ document.addEventListener('DOMContentLoaded', function () {
 		formulario.addEventListener('submit', function () {
 			mostrarCargaNavegacion('Cargando página');
 		});
+	});
+
+	document.querySelectorAll('[data-paginacion-pagina-range]').forEach(control => {
+		const formulario = control.form;
+		const salida = formulario?.querySelector('[data-paginacion-pagina-valor]');
+		const actualizarSalida = () => {
+			if (salida) salida.textContent = control.value;
+		};
+		control.addEventListener('input', actualizarSalida);
+		control.addEventListener('change', function () {
+			actualizarSalida();
+			if (!formulario) return;
+			if (typeof formulario.requestSubmit === 'function') {
+				formulario.requestSubmit();
+			} else {
+				formulario.submit();
+			}
+		});
+		actualizarSalida();
 	});
 
 	document.addEventListener('click', function (ev) {
@@ -1926,12 +1945,12 @@ document.addEventListener('DOMContentLoaded', function () {
 	const panelDestino = document.getElementById('panelDetalleContenido');
 	const placeholderPanel = document.querySelector('.panel-detalle-placeholder');
 	const paneles = Array.from(document.querySelectorAll('.panel-articulo[id^="pie_"]'));
-		const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
-		let barraSeleccion = null;
-		let modalMoverLote = null;
-		let modalCopiarYandex = null;
-		let carpetasLocalesProyecto = null;
-		let operacionLoteEnCurso = false;
+	const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
+	let barraSeleccion = null;
+	let modalMoverLote = null;
+	let modalCopiarYandex = null;
+	let carpetasLocalesProyecto = null;
+	let operacionLoteEnCurso = false;
 
 	function escaparHtmlCliente(valor) {
 		const nodo = document.createElement('span');
@@ -2471,10 +2490,130 @@ document.addEventListener('DOMContentLoaded', function () {
 		}
 	}
 
+	function actualizarArticuloDesdeDetalle(articuloActual, articuloNuevo) {
+		if (!articuloActual || !articuloNuevo) return;
+
+		const articuloActivo = articuloActual.classList.contains('activo');
+		const articuloSeleccionado = articuloActual.classList.contains('seleccionado');
+		const articuloPreparado = articuloActual.dataset.articuloPreparado;
+		const figureActual = articuloActual.querySelector('figure');
+		const figureNuevo = articuloNuevo.querySelector('figure');
+		if (figureActual && figureNuevo) {
+			figureActual.replaceWith(figureNuevo);
+		}
+
+		articuloActual.className = articuloNuevo.className;
+		if (articuloActivo) {
+			articuloActual.classList.add('activo');
+		}
+		if (articuloSeleccionado) {
+			articuloActual.classList.add('seleccionado');
+		}
+		if (articuloPreparado) {
+			articuloActual.dataset.articuloPreparado = articuloPreparado;
+		}
+		articuloActual.dataset.detalleDiferido = '0';
+
+		const estilo = articuloNuevo.getAttribute('style');
+		if (estilo === null) {
+			articuloActual.removeAttribute('style');
+		} else {
+			articuloActual.setAttribute('style', estilo);
+		}
+	}
+
+	function crearPanelArticuloPendiente(articulo) {
+		if (!articulo || !panelDestino) return null;
+
+		const panelId = articulo.dataset.panelId;
+		const ruta = articulo.dataset.detalleRuta || articulo.querySelector('[data-ruta]')?.dataset.ruta || '';
+		const media = articulo.dataset.detalleMedia || articulo.querySelector('[data-tipo]')?.dataset.tipo || 'img';
+		if (!panelId || !ruta) return null;
+
+		panelDestino.replaceChildren();
+		const panel = document.createElement('section');
+		panel.id = panelId;
+		panel.className = 'panel-articulo panel-articulo-pendiente';
+		panel.dataset.panelPendiente = '1';
+		panel.dataset.ruta = ruta;
+		panel.dataset.media = media;
+		panel.innerHTML = '<p class="panel-cargando">Cargando metadatos...</p>';
+		panelDestino.appendChild(panel);
+		return panel;
+	}
+
+	async function cargarPanelArticuloDiferido(articulo, panel) {
+		if (!articulo || !panel || panel.dataset.panelPendiente !== '1' || panel.dataset.cargando === '1') return;
+
+		const id = idArticuloDesdeArticulo(articulo);
+		const ruta = panel.dataset.ruta || articulo.querySelector('[data-ruta]')?.dataset.ruta || '';
+		const media = panel.dataset.media || articulo.querySelector('[data-tipo]')?.dataset.tipo || 'img';
+		if (!id || !ruta) {
+			panel.innerHTML = '<p class="respuesta_error">No se pudo resolver la ruta del archivo.</p>';
+			return;
+		}
+
+		panel.dataset.cargando = '1';
+		panel.setAttribute('aria-busy', 'true');
+		panel.innerHTML = '<p class="panel-cargando">Cargando metadatos...</p>';
+
+		try {
+			const respuesta = await fetch('index.php', {
+				method: 'POST',
+				headers: {'Content-Type': 'application/json;charset=UTF-8'},
+				body: JSON.stringify({
+					estado_metadatos: true,
+					id,
+					ruta,
+					media
+				})
+			});
+			if (!respuesta.ok) {
+				throw new Error('No se pudo cargar el detalle.');
+			}
+			const html = (await respuesta.text()).trim();
+			if (!html) {
+				throw new Error('El servidor no devolvió metadatos.');
+			}
+
+			const plantilla = document.createElement('template');
+			plantilla.innerHTML = html;
+			const panelNuevo = plantilla.content.querySelector(`#pie_${CSS.escape(id)}`);
+			const articuloNuevo = plantilla.content.querySelector(`#art_${CSS.escape(id)}`);
+			if (!panelNuevo) {
+				throw new Error('La respuesta no contiene el panel de metadatos.');
+			}
+			if (document.getElementById(panel.id) !== panel || !articulo.classList.contains('activo')) {
+				return;
+			}
+
+			const visible = !panel.hidden;
+			panel.replaceWith(panelNuevo);
+			if (panelDestino && panelNuevo.parentElement !== panelDestino) {
+				panelDestino.appendChild(panelNuevo);
+			}
+			prepararFormularioPanel(panelNuevo);
+			panelNuevo.hidden = !visible;
+			panelNuevo.removeAttribute('aria-busy');
+
+			actualizarArticuloDesdeDetalle(articulo, articuloNuevo);
+			sincronizarIndicadoresArticulo(articulo);
+		} catch (err) {
+			panel.innerHTML =
+				'<p class="respuesta_error">' + escaparHtmlCliente(err.message || 'No se pudieron cargar los metadatos.') + '</p>' +
+				'<button type="button" class="panel-reintentar-detalle">Reintentar</button>';
+			delete panel.dataset.cargando;
+			panel.removeAttribute('aria-busy');
+		}
+	}
+
 	function mostrarPanelArticulo(articulo) {
 		if (!articulo) return;
 		const panelId = articulo.dataset.panelId;
-		const panel = document.getElementById(panelId);
+		let panel = document.getElementById(panelId);
+		if (!panel) {
+			panel = crearPanelArticuloPendiente(articulo);
+		}
 		if (!panel) return;
 
 		document.querySelectorAll('main article[data-panel-id]').forEach(item => item.classList.toggle('activo', item === articulo));
@@ -2485,7 +2624,19 @@ document.addEventListener('DOMContentLoaded', function () {
 		if (placeholderPanel) {
 			placeholderPanel.hidden = true;
 		}
+		cargarPanelArticuloDiferido(articulo, panel);
 	}
+
+	document.addEventListener('click', function (ev) {
+		const boton = ev.target.closest?.('.panel-reintentar-detalle');
+		if (!boton) return;
+		const panel = boton.closest('.panel-articulo[id^="pie_"]');
+		const id = (panel?.id || '').replace(/^pie_/, '');
+		const articulo = id ? document.getElementById(`art_${id}`) : null;
+		if (!panel || !articulo) return;
+		ev.preventDefault();
+		cargarPanelArticuloDiferido(articulo, panel);
+	});
 
 		document.addEventListener('click', function (ev) {
 			const boton = ev.target.closest?.('.yandex-descarga-boton[data-yandex-copy-name]');
@@ -2513,12 +2664,62 @@ document.addEventListener('DOMContentLoaded', function () {
 		contenedor.appendChild(indicador);
 	}
 
+	function indicadorDatasetKey(clave) {
+		return 'indicador' + clave.charAt(0).toUpperCase() + clave.slice(1);
+	}
+
+	function actualizarDatasetIndicador(articulo, clave, activo) {
+		if (!articulo) return;
+		const datasetKey = indicadorDatasetKey(clave);
+		if (activo) {
+			articulo.dataset[datasetKey] = '1';
+		} else {
+			delete articulo.dataset[datasetKey];
+		}
+	}
+
+	function indicadorActivoDesdeArticulo(articulo, clave) {
+		return articulo?.dataset?.[indicadorDatasetKey(clave)] === '1';
+	}
+
+	function obtenerEstadoIndicadoresArticulo(articulo, panel) {
+		if (panel) {
+			const sugeridos = panel.querySelectorAll('.sugerido').length;
+			const advertencias = panel.querySelectorAll('.advertencia-metadatos').length;
+			const estado = {
+				ia: panel.dataset.metadatosIa === '1' || Boolean(panel.querySelector('.metadata-ia')),
+				geo: panel.dataset.geolocalizacion === '1' || Boolean(panel.querySelector('.metadata-geo')),
+				xattr: Boolean(panel.querySelector('.metadata-xattr')),
+				duplicado: panel.dataset.palabrasDuplicadas === '1' || Boolean(panel.querySelector('.requiere-guardar')),
+				sugeridos,
+				advertencias
+			};
+			actualizarDatasetIndicador(articulo, 'ia', estado.ia);
+			actualizarDatasetIndicador(articulo, 'geo', estado.geo);
+			actualizarDatasetIndicador(articulo, 'xattr', estado.xattr);
+			actualizarDatasetIndicador(articulo, 'duplicado', estado.duplicado);
+			actualizarDatasetIndicador(articulo, 'sugerido', sugeridos > 0);
+			actualizarDatasetIndicador(articulo, 'advertencia', advertencias > 0);
+			return estado;
+		}
+
+		return {
+			ia: indicadorActivoDesdeArticulo(articulo, 'ia'),
+			geo: indicadorActivoDesdeArticulo(articulo, 'geo'),
+			xattr: indicadorActivoDesdeArticulo(articulo, 'xattr'),
+			duplicado: indicadorActivoDesdeArticulo(articulo, 'duplicado'),
+			sugeridos: indicadorActivoDesdeArticulo(articulo, 'sugerido') ? 1 : 0,
+			advertencias: indicadorActivoDesdeArticulo(articulo, 'advertencia') ? 1 : 0
+		};
+	}
+
 	function sincronizarIndicadoresArticulo(articulo) {
 		const panel = document.getElementById(articulo.dataset.panelId);
 		const figure = articulo.querySelector('figure');
-		if (!panel || !figure) return;
+		if (!figure) return;
 
 		insertarControlSeleccion(articulo);
+
 		let contenedor = figure.querySelector('.indicadores-articulo');
 		if (!contenedor) {
 			contenedor = document.createElement('div');
@@ -2527,14 +2728,9 @@ document.addEventListener('DOMContentLoaded', function () {
 		}
 		contenedor.innerHTML = '';
 
-		const sugeridos = panel.querySelectorAll('.sugerido').length;
-		const advertencias = panel.querySelectorAll('.advertencia-metadatos').length;
-		const metadatosIA = panel.dataset.metadatosIa === '1' || panel.querySelector('.metadata-ia');
-		const geolocalizacion = panel.dataset.geolocalizacion === '1' || panel.querySelector('.metadata-geo');
-		const origenSistema = panel.querySelector('.metadata-xattr');
-		const palabrasDuplicadas = panel.dataset.palabrasDuplicadas === '1' || panel.querySelector('.requiere-guardar');
+		const estado = obtenerEstadoIndicadoresArticulo(articulo, panel);
 
-		if (metadatosIA) {
+		if (estado.ia) {
 			agregarIndicadorArticulo(
 				contenedor,
 				'indicador-ia',
@@ -2542,7 +2738,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				'Metadatos de IA detectados'
 			);
 		}
-		if (geolocalizacion) {
+		if (estado.geo) {
 			agregarIndicadorArticulo(
 				contenedor,
 				'indicador-geo',
@@ -2550,7 +2746,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				'Datos de geolocalización detectados'
 			);
 		}
-		if (origenSistema) {
+		if (estado.xattr) {
 			agregarIndicadorArticulo(
 				contenedor,
 				'indicador-xattr',
@@ -2558,7 +2754,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				'Origen del archivo registrado por el sistema'
 			);
 		}
-		if (palabrasDuplicadas) {
+		if (estado.duplicado) {
 			agregarIndicadorArticulo(
 				contenedor,
 				'indicador-duplicado',
@@ -2566,21 +2762,28 @@ document.addEventListener('DOMContentLoaded', function () {
 				'Palabras clave duplicadas; guardar para corregir'
 			);
 		}
-		if (sugeridos > 0) {
+		if (estado.sugeridos > 0) {
 			agregarIndicadorArticulo(
 				contenedor,
 				'indicador-sugerido',
 				'💡',
-				`${sugeridos} campo${sugeridos === 1 ? '' : 's'} sugerido${sugeridos === 1 ? '' : 's'}`
+				panel
+					? `${estado.sugeridos} campo${estado.sugeridos === 1 ? '' : 's'} sugerido${estado.sugeridos === 1 ? '' : 's'}`
+					: 'Campos sugeridos detectados'
 			);
 		}
-		if (advertencias > 0) {
+		if (estado.advertencias > 0) {
 			agregarIndicadorArticulo(
 				contenedor,
 				'indicador-advertencia',
 				'⚠️',
-				`${advertencias} advertencia${advertencias === 1 ? '' : 's'} de metadatos`
+				panel
+					? `${estado.advertencias} advertencia${estado.advertencias === 1 ? '' : 's'} de metadatos`
+					: 'Advertencia de metadatos detectada'
 			);
+		}
+		if (!contenedor.children.length) {
+			contenedor.remove();
 		}
 	}
 
@@ -2588,7 +2791,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		if (!formulario || formulario.dataset.formularioPreparado === '1') return;
 		formulario.dataset.formularioPreparado = '1';
 
-		const formId = formulario.id.split('_')[1]; // Extrae el número, ej. '2'
+		const formId = formulario.id.replace(/^[^_]+_/, '');
 		const botonGuardar = formulario.querySelector(`#btn_${formId}`);
 		const inputs = formulario.querySelectorAll('input, textarea');
 		const select = formulario.querySelector(`#orientacion_${formId}`);
@@ -2664,16 +2867,52 @@ document.addEventListener('DOMContentLoaded', function () {
 		});
 	}
 
+	function tipoMensajeDetalle(html) {
+		if (!html) return 'info';
+		const plantilla = document.createElement('template');
+		plantilla.innerHTML = String(html);
+		if (plantilla.content.querySelector('.panel-detalle-mensaje')) return '';
+		if (plantilla.content.querySelector('.respuesta_error')) return 'error';
+		if (plantilla.content.querySelector('.errores-lote')) return 'advertencia';
+		const texto = (plantilla.content.textContent || '').toLowerCase();
+		if (texto.includes('no se pudo') || texto.includes('error del servidor')) return 'error';
+		if (texto.includes('errores') || texto.includes('advertencia')) return 'advertencia';
+		if (texto.includes('error')) return 'error';
+		return 'exito';
+	}
+
+	function formatearMensajeDetalle(html) {
+		const esPlaceholder = !html;
+		const contenido = html || 'Selecciona un archivo para ver su información';
+		const tipo = esPlaceholder ? 'info' : tipoMensajeDetalle(contenido);
+		if (tipo === '') return contenido;
+		const iconos = {
+			exito: '✓',
+			error: '!',
+			advertencia: '!',
+			info: 'i'
+		};
+		return (
+			`<div class="panel-detalle-mensaje panel-detalle-mensaje-${tipo}" role="status" aria-live="polite">` +
+				`<span class="panel-detalle-mensaje-icono" aria-hidden="true">${iconos[tipo] || 'i'}</span>` +
+				`<div class="panel-detalle-mensaje-cuerpo">${contenido}</div>` +
+			'</div>'
+		);
+	}
+
 	function mostrarMensajeDetalle(html) {
 		document.querySelectorAll('.panel-articulo[id^="pie_"]').forEach(panel => {
 			panel.hidden = true;
 		});
+		if (panelDestino) {
+			panelDestino.replaceChildren();
+		}
 		document.querySelectorAll('main article[data-panel-id]').forEach(articulo => {
 			articulo.classList.remove('activo');
 		});
 		if (placeholderPanel) {
 			placeholderPanel.hidden = false;
-			placeholderPanel.innerHTML = html || 'Selecciona un archivo';
+			placeholderPanel.innerHTML = formatearMensajeDetalle(html);
 		}
 	}
 
@@ -2683,7 +2922,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		const articulo = plantilla.content.querySelector('article[data-panel-id]');
 		const panel = plantilla.content.querySelector('.panel-articulo[id^="pie_"]');
 		const main = document.querySelector('main');
-		if (!articulo || !panel || !main) return null;
+		if (!articulo || !main) return null;
 
 		const ruta = articulo.querySelector('[data-ruta]')?.dataset.ruta || '';
 		if (ruta && rutaYaVisibleEnMiniaturas(ruta)) return null;
@@ -2695,7 +2934,9 @@ document.addEventListener('DOMContentLoaded', function () {
 		} else {
 			main.prepend(articulo);
 		}
-		registrarPanelArticulo(panel);
+		if (panel) {
+			registrarPanelArticulo(panel);
+		}
 		registrarArticulo(articulo);
 		return articulo;
 	}
