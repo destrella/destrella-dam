@@ -1025,6 +1025,332 @@ function duplicadosAtributosItem(array $item): string
 	return $html;
 }
 
+function duplicadosNormalizarClaveMetadato(string $clave): string
+{
+	return preg_replace('/[^a-z0-9]+/', '', mb_strtolower($clave, 'UTF-8')) ?? '';
+}
+
+function duplicadosValorMetadatoTexto(mixed $valor, int $limite = 12000): string
+{
+	if (is_array($valor)):
+		$valor = json_encode($valor, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+	elseif (is_bool($valor)):
+		$valor = $valor ? 'true' : 'false';
+	elseif ($valor === null):
+		$valor = '';
+	else:
+		$valor = (string) $valor;
+	endif;
+
+	$valor = trim((string) $valor);
+	if ($limite > 0 && mb_strlen($valor, 'UTF-8') > $limite):
+		return mb_substr($valor, 0, $limite, 'UTF-8') . "\n...[valor recortado para la vista]";
+	endif;
+
+	return $valor;
+}
+
+function duplicadosAplanarMetadatos(array $metadatos, string $prefijo = '', int &$conteo = 0): array
+{
+	$salida = [];
+	foreach ($metadatos as $clave => $valor):
+		if ($conteo >= 600):
+			break;
+		endif;
+		$claveTexto = trim($prefijo . (string) $clave);
+		if ($claveTexto === ''):
+			$claveTexto = 'Campo';
+		endif;
+		if (is_array($valor)):
+			$esAsociativo = array_keys($valor) !== range(0, count($valor) - 1);
+			if ($esAsociativo && count($valor) <= 80):
+				$subconteo = $conteo;
+				$aplanado = duplicadosAplanarMetadatos($valor, $claveTexto . '.', $subconteo);
+				if (!empty($aplanado)):
+					$conteo = $subconteo;
+					$salida += $aplanado;
+					continue;
+				endif;
+			endif;
+		endif;
+		$salida[$claveTexto] = duplicadosValorMetadatoTexto($valor);
+		$conteo++;
+	endforeach;
+
+	return $salida;
+}
+
+function duplicadosMetadatoDestacado(string $clave): bool
+{
+	$clave = duplicadosNormalizarClaveMetadato($clave);
+	$exactas = [
+		'title',
+		'description',
+		'imagedescription',
+		'captionabstract',
+		'subject',
+		'keywords',
+		'hierarchicalsubject',
+		'artist',
+		'creator',
+		'byline',
+		'copyright',
+		'copyrightnotice',
+		'software',
+		'creatortool',
+		'processingsoftware',
+		'createdate',
+		'datecreated',
+		'datetimeoriginal',
+		'creationdate',
+		'modifydate',
+		'orientation',
+		'make',
+		'model',
+		'lensmodel',
+		'parameters',
+		'prompt',
+		'negativeprompt',
+		'invokeaimetadata',
+		'invokeaigraph',
+		'invokeaiworkflow',
+		'workflow',
+	];
+	if (in_array($clave, $exactas, true)):
+		return true;
+	endif;
+
+	foreach (['prompt', 'parameters', 'workflow', 'invokeai', 'comfyui', 'metadata', 'software', 'creator', 'subject', 'keyword'] as $fragmento):
+		if (str_contains($clave, $fragmento)):
+			return true;
+		endif;
+	endforeach;
+
+	return false;
+}
+
+function duplicadosTipoComparacionMetadato(string $clave): string
+{
+	$clave = duplicadosNormalizarClaveMetadato($clave);
+	$ignorar = [
+		'nombre',
+		'rutalocal',
+		'rutayandex',
+		'sourcefile',
+		'filename',
+		'directory',
+		'filepath',
+		'filetypeextension',
+		'filepermissions',
+		'filesystemflags',
+		'resourceid',
+		'yandexresourceid',
+	];
+	if (in_array($clave, $ignorar, true)):
+		return 'ignorar';
+	endif;
+
+	foreach (['ruta', 'path', 'directory'] as $fragmento):
+		if (str_contains($clave, $fragmento)):
+			return 'ignorar';
+		endif;
+	endforeach;
+
+	$volatiles = [
+		'modificado',
+		'created',
+		'modified',
+		'creationdate',
+		'createdate',
+		'datecreated',
+		'modifydate',
+		'metadatadate',
+		'filecreatedate',
+		'filemodifydate',
+		'fileaccessdate',
+		'fileinodechangedate',
+		'filechangdate',
+		'filemodificationdatetime',
+		'fileaccessdatetime',
+		'fileinodechangedatetime',
+		'digitalcreationdate',
+		'digitalcreationtime',
+		'profiledatetime',
+	];
+	if (in_array($clave, $volatiles, true)):
+		return 'volatil';
+	endif;
+
+	if (
+		preg_match('/(?:^|file|metadata|profile|digital)(?:create|created|modify|modified|access|inode|change|date|time|timestamp)/', $clave)
+		|| preg_match('/(?:date|time|timestamp)$/', $clave)
+	):
+		return 'volatil';
+	endif;
+
+	return 'normal';
+}
+
+function duplicadosHashComparacionMetadato(string $valor): string
+{
+	$valor = str_replace(["\r\n", "\r"], "\n", $valor);
+	$valor = preg_replace('/[ \t]+/u', ' ', $valor) ?? $valor;
+	$valor = preg_replace('/\n{3,}/u', "\n\n", $valor) ?? $valor;
+	return sha1(trim($valor));
+}
+
+function duplicadosRenderFilaMetadato(string $clave, string $valor): string
+{
+	$claveComparacion = duplicadosNormalizarClaveMetadato($clave);
+	$tipoComparacion = duplicadosTipoComparacionMetadato($clave);
+	$hashComparacion = duplicadosHashComparacionMetadato($valor);
+	return
+		'<div class="duplicados-metadatos-fila" data-duplicado-metadato-fila="1" data-duplicado-metadato-clave="' . escaparHtml($claveComparacion) . '" data-duplicado-metadato-tipo="' . escaparHtml($tipoComparacion) . '" data-duplicado-metadato-hash="' . escaparHtml($hashComparacion) . '">' .
+		'<dt>' . escaparHtml($clave) . '</dt>' .
+		'<dd>' . nl2br(escaparHtml($valor)) . '</dd>' .
+		'</div>';
+}
+
+function duplicadosRenderMetadatosArchivo(array $metadatos, string $titulo, string $subtitulo = ''): string
+{
+	$conteo = 0;
+	$metadatos = duplicadosAplanarMetadatos($metadatos, '', $conteo);
+	$total = count($metadatos);
+	$destacados = [];
+	foreach ($metadatos as $clave => $valor):
+		if ($valor !== '' && duplicadosMetadatoDestacado($clave)):
+			$destacados[$clave] = $valor;
+		endif;
+		if (count($destacados) >= 12):
+			break;
+		endif;
+	endforeach;
+
+	$filas = [];
+	$caracteres = 0;
+	foreach ($metadatos as $clave => $valor):
+		$caracteres += strlen($clave) + strlen($valor);
+		if ($caracteres > 180000):
+			$filas[] = duplicadosRenderFilaMetadato('Salida recortada', 'La vista recortó metadatos para mantenerse ligera.');
+			break;
+		endif;
+		$filas[] = duplicadosRenderFilaMetadato((string) $clave, (string) $valor);
+	endforeach;
+
+	$html =
+		'<section class="duplicados-metadatos-archivo">' .
+		'<div class="duplicados-metadatos-cabecera">' .
+		'<strong>' . escaparHtml($titulo) . '</strong>' .
+		'<span>' . $total . ' campo' . ($total === 1 ? '' : 's') . '</span>' .
+		'</div>' .
+		($subtitulo !== '' ? '<p>' . escaparHtml($subtitulo) . '</p>' : '');
+
+	if ($total === 0):
+		return $html . '<p class="duplicados-metadatos-vacio">No hay metadatos disponibles en cache para este archivo.</p></section>';
+	endif;
+
+	if (!empty($destacados)):
+		$html .= '<dl class="duplicados-metadatos-destacados">';
+		foreach ($destacados as $clave => $valor):
+			$html .= duplicadosRenderFilaMetadato((string) $clave, (string) $valor);
+		endforeach;
+		$html .= '</dl>';
+	endif;
+
+	$html .=
+		'<details class="duplicados-metadatos-detalle" open>' .
+		'<summary>Todos los metadatos</summary>' .
+		'<dl class="duplicados-metadatos-lista">' . implode('', $filas) . '</dl>' .
+		'</details>' .
+		'</section>';
+
+	return $html;
+}
+
+function duplicadosBuscarYandexCachePorRuta(string $ruta): ?array
+{
+	$ruta = normalizarRutaYandexDisk($ruta);
+	if ($ruta === '/'):
+		return null;
+	endif;
+
+	$yandex = duplicadosObtenerYandexCache();
+	foreach ((array) ($yandex['items'] ?? []) as $item):
+		if (normalizarRutaYandexDisk($item['ruta'] ?? '') === $ruta):
+			return $item;
+		endif;
+	endforeach;
+
+	return null;
+}
+
+function duplicadosRespuestaMetadatosAjax(string $origen, string $ruta): array
+{
+	$origen = $origen === 'yandex' ? 'yandex' : 'local';
+	if ($origen === 'yandex'):
+		$item = duplicadosBuscarYandexCachePorRuta($ruta);
+		if ($item === null):
+			return ['ok' => false, 'error' => 'No se encontró el archivo remoto en el cache de Yandex.Disk.'];
+		endif;
+		$metadatos = [
+			'Nombre' => (string) ($item['nombre'] ?? basename((string) ($item['ruta'] ?? ''))),
+			'Ruta Yandex' => (string) ($item['ruta'] ?? ''),
+			'MIME' => (string) ($item['mime'] ?? ''),
+			'Tipo' => (string) ($item['tipo'] ?? ''),
+			'Tamaño' => (string) ($item['tamano_legible'] ?? ''),
+			'Modificado' => (string) ($item['modificado'] ?? ''),
+			'MD5' => (string) ($item['md5'] ?? ''),
+			'SHA-256' => (string) ($item['sha256'] ?? ''),
+			'Píxeles' => (string) ($item['contenido_hash'] ?? ''),
+			'dHash' => (string) ($item['perceptual_hash'] ?? ''),
+			'Dimensiones' => duplicadosTextoDimensiones($item),
+			'Duración' => duplicadosTextoDuracion($item),
+		];
+		$exif = is_array($item['exif'] ?? null) ? $item['exif'] : [];
+		if (!empty($exif)):
+			$metadatos['EXIF'] = $exif;
+		endif;
+
+		return [
+			'ok' => true,
+			'html' => duplicadosRenderMetadatosArchivo(
+				$metadatos,
+				'Metadatos en cache de Yandex.Disk',
+				'Yandex.Disk sólo expone los metadatos que estén presentes en su respuesta cacheada; no se descarga el archivo multimedia.'
+			),
+		];
+	endif;
+
+	$rutaLocal = resolverRutaTolerante($ruta, 'file', false);
+	if ($rutaLocal === null):
+		return ['ok' => false, 'error' => 'No se pudo resolver la ruta local del archivo.'];
+	endif;
+
+	$metadatos = [
+		'Nombre' => basename($rutaLocal),
+		'Ruta local' => $rutaLocal,
+		'Tamaño' => yandexDiskFormatoTamano((int) filesize($rutaLocal)),
+		'Modificado' => duplicadosFormatearFecha((int) filemtime($rutaLocal)),
+	];
+	$resultado = obtenerMetadatos($rutaLocal);
+	if (is_array($resultado['resultado'] ?? null)):
+		$metadatos += $resultado['resultado'];
+	endif;
+
+	if (($resultado['resultado'] ?? false) === false):
+		$metadatos['Lectura exiftool'] = 'No se pudieron leer metadatos completos con exiftool.';
+		return [
+			'ok' => true,
+			'html' => duplicadosRenderMetadatosArchivo($metadatos, 'Metadatos locales'),
+		];
+	endif;
+
+	return [
+		'ok' => true,
+		'html' => duplicadosRenderMetadatosArchivo($metadatos, 'Metadatos locales leídos con exiftool'),
+	];
+}
+
 function duplicadosExtraerRecursosCacheYandex(array $datos): array
 {
 	$recursos = [];
@@ -3517,7 +3843,7 @@ function renderizarGruposDuplicados(array $grupos): string
 			? (in_array('local', $origenes, true) ? 'Procesar selección' : 'Enviar selección a papelera')
 			: 'Descartar selección';
 		$html .=
-			'<details class="duplicados-grupo duplicados-grupo-' . escaparHtml($origenTipo) . ($cruzado ? ' duplicados-grupo-cruzado' : '') . '" open data-duplicados-busqueda="' . escaparHtml($busqueda) . '" data-duplicado-grupo="1" data-duplicado-grupo-tipo="' . escaparHtml($origenTipo) . '">' .
+			'<details class="duplicados-grupo duplicados-grupo-' . escaparHtml($origenTipo) . ($cruzado ? ' duplicados-grupo-cruzado' : '') . '" open data-duplicados-busqueda="' . escaparHtml($busqueda) . '" data-duplicado-grupo="1" data-duplicado-grupo-tipo="' . escaparHtml($origenTipo) . '" data-duplicado-razones="' . escaparHtml(implode(' · ', $razones)) . '">' .
 				'<summary>' .
 				'<span class="duplicados-grupo-titulo">' . count($items) . ' archivos' . ($cruzado ? ' · Local/Yandex' : '') . '</span>' .
 				'<span class="duplicados-score duplicados-score-' . ($score >= 100 ? 'exacto' : 'probable') . '">Score ' . $score . ' · ' . escaparHtml($etiquetaScore) . '</span>' .

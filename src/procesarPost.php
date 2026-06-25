@@ -336,6 +336,18 @@ endif;
 if (array_key_exists('duplicados_accion', $json)):
 	header('Content-Type: application/json; charset=UTF-8');
 	$accionDuplicados = (string) ($json['duplicados_accion'] ?? 'estado');
+	if ($accionDuplicados === 'metadatos'):
+		$respuestaMetadatosDuplicados = duplicadosRespuestaMetadatosAjax(
+			(string) ($json['origen'] ?? 'local'),
+			(string) ($json['archivo'] ?? '')
+		);
+		if (empty($respuestaMetadatosDuplicados['ok'])):
+			http_response_code(400);
+		endif;
+		echo json_encode($respuestaMetadatosDuplicados, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		exit;
+	endif;
+
 	$baseDuplicados = duplicadosResolverBaseLocal($json['ruta'] ?? '');
 	$okDuplicados = true;
 	$errorDuplicados = '';
