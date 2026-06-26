@@ -4465,6 +4465,29 @@ function duplicadosYandexCatalogoDebePausar(array $respuesta, int $erroresConsec
 	return $erroresConsecutivos >= DUPLICADOS_YANDEX_CATALOGO_ERRORES_CONSECUTIVOS_MAX;
 }
 
+function duplicadosYandexCatalogoMensajePausa(array $respuesta): string
+{
+	$status = (int) ($respuesta['status'] ?? 0);
+	$error = trim(preg_replace('/\s+/u', ' ', (string) ($respuesta['error'] ?? '')) ?? '');
+	if (mb_strlen($error, 'UTF-8') > 180):
+		$error = mb_substr($error, 0, 177, 'UTF-8') . '...';
+	endif;
+
+	if (in_array($status, [401, 403], true)):
+		return 'Yandex respondió con error de autorización (HTTP ' . $status . '); revisa el token OAuth y vuelve a catalogar.';
+	endif;
+
+	if ($status === 400):
+		return 'Yandex rechazó una ruta del catálogo (HTTP 400)' . ($error !== '' ? ': ' . $error : '') . '. Se pausó el catálogo.';
+	endif;
+
+	if ($status > 0):
+		return 'Yandex respondió con HTTP ' . $status . ($error !== '' ? ': ' . $error : '') . '. Se pausó el catálogo.';
+	endif;
+
+	return 'Yandex respondió con un error no reintentable' . ($error !== '' ? ': ' . $error : '') . '. Se pausó el catálogo.';
+}
+
 function duplicadosYandexCatalogoConteo(): array
 {
 	$pdo = conectarCatalogoMultimedia();
@@ -4659,7 +4682,7 @@ function duplicadosYandexCatalogoEjecutarTrabajo(string $id): void
 						'reanudar_en' => $reanudarEn,
 						'mensaje' => $reintetable
 							? 'Yandex respondió lento o con error temporal; pausa prudente. Se reanuda automáticamente en ' . duplicadosYandexCatalogoSegundos(DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US) . ' segundos.'
-							: 'Yandex respondió con error de autorización; se pausó el catálogo.',
+							: duplicadosYandexCatalogoMensajePausa($respuesta),
 					]);
 					if ($reintetable):
 						if (!duplicadosYandexCatalogoDormirCancelable($id, DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US)):

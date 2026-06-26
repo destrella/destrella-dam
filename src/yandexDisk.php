@@ -507,6 +507,11 @@ function normalizarRutaYandexDisk(mixed $valor): string
 	return empty($partes) ? '/' : '/' . implode('/', $partes);
 }
 
+function rutaApiYandexDisk(string $ruta): string
+{
+	return 'disk:' . normalizarRutaYandexDisk($ruta);
+}
+
 function rutaYandexDiskDesdeFuente(?array $fuente = null): string
 {
 	$fuente ??= $_GET;
@@ -887,7 +892,7 @@ function obtenerPreviewYandexDisk(array $configuracion, string $ruta, string $ta
 	endif;
 
 	$respuesta = yandexDiskPeticion('resources', [
-		'path' => $ruta,
+		'path' => rutaApiYandexDisk($ruta),
 		'fields' => 'name,path,type,preview,mime_type',
 		'preview_size' => normalizarTamanoPreviewYandexDisk($tamano),
 		'preview_crop' => 'false',
@@ -921,7 +926,7 @@ function obtenerUrlDescargaYandexDisk(array $configuracion, string $ruta): array
 	endif;
 
 	$respuesta = yandexDiskPeticion('resources/download', [
-		'path' => $ruta,
+		'path' => rutaApiYandexDisk($ruta),
 		'fields' => 'href,method,templated',
 	], $token, 10);
 
@@ -986,7 +991,7 @@ function obtenerRecursoYandexDisk(array $configuracion, string $ruta): array
 	endif;
 
 	$respuesta = yandexDiskPeticion('resources', [
-		'path' => $ruta,
+		'path' => rutaApiYandexDisk($ruta),
 		'fields' => 'name,path,type,mime_type,media_type,md5,sha256,size,modified,created,preview,public_url,resource_id,exif',
 		'preview_size' => 'M',
 		'preview_crop' => 'false',
@@ -1020,7 +1025,7 @@ function enviarPapeleraYandexDisk(array $configuracion, string $ruta): array
 	endif;
 
 	$respuesta = yandexDiskPeticion('resources', [
-		'path' => $ruta,
+		'path' => rutaApiYandexDisk($ruta),
 		'permanently' => 'false',
 	], $token, 20, 'DELETE');
 
@@ -1367,7 +1372,7 @@ function obtenerDirectorioYandexDisk(array $configuracion, string $ruta = '/', i
 	$multimedia = [];
 	$total = 0;
 	$parametros = [
-		'path' => $ruta,
+		'path' => rutaApiYandexDisk($ruta),
 		'limit' => $limite,
 		'offset' => $offset,
 		'sort' => $ordenRecursos,
@@ -1482,7 +1487,7 @@ function obtenerDirectorioYandexDiskRemotoCatalogo(array $configuracion, string 
 	$limite = max(1, min(200, $limite));
 	$offset = max(0, $offset);
 	$parametros = [
-		'path' => $ruta,
+		'path' => rutaApiYandexDisk($ruta),
 		'limit' => $limite,
 		'offset' => $offset,
 		'sort' => 'name',
