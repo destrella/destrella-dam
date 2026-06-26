@@ -261,6 +261,50 @@ function vistaDebeVolverARaiz(array $json): bool
 	return resolverDirectorioVista($json['vista_ruta'] ?? null, $json['vista_archivo'] ?? null) === null;
 }
 
+function estadoPaginacionVistaLocal(array $json): array
+{
+	$paginaSolicitada = max(1, (int) ($json['pagina'] ?? 1));
+	$ver = max(1, min(100, (int) ($json['ver'] ?? 6)));
+	$media = in_array(($json['media'] ?? ''), ['fotos', 'videos'], true) ? $json['media'] : null;
+	$palabraClave = obtenerPalabraClaveActiva($json);
+
+	if ($palabraClave !== ''):
+		$resultados = obtenerResultadosPorPalabraClave($palabraClave, $media);
+	else:
+		$rutaIterador = resolverDirectorioVista(
+			$json['ruta'] ?? $json['vista_ruta'] ?? null,
+			$json['archivo'] ?? $json['vista_archivo'] ?? null
+		);
+		if ($rutaIterador === null):
+			return [
+				'ok' => false,
+				'total_elementos' => 0,
+				'total_paginas' => 1,
+				'pagina_solicitada' => $paginaSolicitada,
+				'pagina_actual' => 1,
+				'ver' => $ver,
+				'pagina_corregida' => $paginaSolicitada !== 1,
+			];
+		endif;
+		$resultados = obtenerResultadosMultimediaEscaneo($rutaIterador, null, carpetasIgnoradasConfiguracion(), $media);
+	endif;
+
+	$resultados = filtrarResultadosPorMetadatos($resultados, obtenerFiltrosMetadatosDesdeFuente($json));
+	$totalElementos = count($resultados);
+	$totalPaginas = max(1, (int) ceil($totalElementos / $ver));
+	$paginaActual = max(1, min($paginaSolicitada, $totalPaginas));
+
+	return [
+		'ok' => true,
+		'total_elementos' => $totalElementos,
+		'total_paginas' => $totalPaginas,
+		'pagina_solicitada' => $paginaSolicitada,
+		'pagina_actual' => $paginaActual,
+		'ver' => $ver,
+		'pagina_corregida' => $paginaActual !== $paginaSolicitada,
+	];
+}
+
 if (array_key_exists('operacion_lote', $json)):
 	header('Content-Type: application/json; charset=UTF-8');
 	$operacion = (string) ($json['operacion_lote'] ?? '');
@@ -328,6 +372,7 @@ if (array_key_exists('operacion_lote', $json)):
 		'errores' => $errores,
 		'resultados' => $resultadosOperacion,
 		'redirect_raiz' => vistaDebeVolverARaiz($json),
+		'paginacion' => estadoPaginacionVistaLocal($json),
 		'mensaje' => count($ok) . ' archivo' . (count($ok) === 1 ? '' : 's') . ' procesado' . (count($ok) === 1 ? '' : 's') . '.',
 	], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 	exit;

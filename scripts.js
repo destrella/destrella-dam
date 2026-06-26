@@ -260,11 +260,13 @@ function obtenerParametrosVistaActual(){
 	const paginador = document.querySelector('.col-contenido > .paginación.condensado')
 		|| document.querySelector('.paginación');
 	const controlPagina = paginador?.querySelector('[name="pagina"]');
+	const controlPaginaRange = paginador?.querySelector('[data-paginacion-pagina-range]');
 	const controlVer = paginador?.querySelector('input[name="ver"]');
 	const controlMedia = paginador?.querySelector('[name="media"]');
 	const controlRuta = paginador?.querySelector('input[name="ruta"]');
 	const pagina = parseInt(params.get('pagina') || controlPagina?.value || '1', 10);
 	const ver = parseInt(params.get('ver') || controlVer?.value || '6', 10);
+	const totalPaginas = parseInt(controlPaginaRange?.max || '1', 10);
 	const filtros = {};
 	['geo', 'regiones', 'rotacion', 'palabras', 'sugerencias', 'duplicadas', 'tracking'].forEach(clave => {
 		filtros[clave] = params.get(clave) || '';
@@ -273,6 +275,7 @@ function obtenerParametrosVistaActual(){
 	return {
 		pagina: Number.isFinite(pagina) && pagina > 0 ? pagina : 1,
 		ver: Number.isFinite(ver) && ver > 0 ? ver : 6,
+		total_paginas: Number.isFinite(totalPaginas) && totalPaginas > 0 ? totalPaginas : 1,
 		media: params.get('media') || controlMedia?.value || '',
 		ruta: params.get('ruta') || controlRuta?.value || '',
 		archivo: params.get('archivo') || '',
@@ -299,6 +302,14 @@ function redirigirARaizCarpetas(){
 	window.location.href = urlRaizCarpetas();
 }
 
+function redirigirAPaginaVista(pagina, texto = 'Actualizando página'){
+	const paginaDestino = Math.max(1, parseInt(pagina || '1', 10) || 1);
+	const url = new URL(window.location.href);
+	url.searchParams.set('pagina', String(paginaDestino));
+	mostrarCargaNavegacion(texto);
+	window.location.href = url.toString();
+}
+
 function directorioEliminadoAfectaVista(directorio){
 	const params = new URLSearchParams(window.location.search);
 	const vista = normalizarRutaVista(params.get('ruta') || params.get('archivo') || '');
@@ -322,6 +333,25 @@ function manejarDirectorioEliminadoDesdeHeader(xhr){
 
 function cantidadArticulosVista(){
 	return document.querySelectorAll('main article[data-panel-id]').length;
+}
+
+function manejarPaginacionLote(datos, parametros){
+	const paginacion = datos?.paginacion;
+	if (!paginacion || !paginacion.ok) return false;
+
+	const totalActual = Number(parametros.total_paginas || 1);
+	const totalNuevo = Number(paginacion.total_paginas || 1);
+	const paginaNueva = Number(paginacion.pagina_actual || parametros.pagina || 1);
+	const paginaCorregida = Boolean(paginacion.pagina_corregida);
+	if (
+		paginaCorregida
+		|| (Number.isFinite(totalNuevo) && Number.isFinite(totalActual) && totalNuevo !== totalActual)
+	) {
+		redirigirAPaginaVista(paginaNueva, paginaCorregida ? 'Cargando página anterior' : 'Actualizando paginación');
+		return true;
+	}
+
+	return false;
 }
 
 function solicitarRellenoPagina(indice = null){
@@ -3320,6 +3350,19 @@ document.addEventListener('DOMContentLoaded', function () {
 					rutas: seleccion.map(item => item.ruta),
 					destino: extra.destino || '',
 					subcarpeta: extra.subcarpeta || '',
+					pagina: parametros.pagina,
+					ver: parametros.ver,
+					media: parametros.media,
+					ruta: parametros.ruta,
+					archivo: parametros.archivo,
+					palabra_clave: parametros.palabra_clave,
+					geo: parametros.geo,
+					regiones: parametros.regiones,
+					rotacion: parametros.rotacion,
+					palabras: parametros.palabras,
+					sugerencias: parametros.sugerencias,
+					duplicadas: parametros.duplicadas,
+					tracking: parametros.tracking,
 					vista_ruta: parametros.ruta,
 					vista_archivo: parametros.archivo
 				})
@@ -3339,6 +3382,10 @@ document.addEventListener('DOMContentLoaded', function () {
 			if (datos.redirect_raiz) {
 				redirigiendo = true;
 				redirigirARaizCarpetas();
+				return true;
+			}
+			if (manejarPaginacionLote(datos, parametros)) {
+				redirigiendo = true;
 				return true;
 			}
 
