@@ -527,6 +527,32 @@ function catalogoEliminarMedio(string $ruta): void
 	endforeach;
 }
 
+function catalogoMarcarLocalesAusentes(PDO $pdo, array $rutas): int
+{
+	$rutas = array_values(array_unique(array_filter(array_map(
+		static fn($ruta) => trim(str_replace('\\', '/', (string) $ruta)),
+		$rutas
+	))));
+	if (empty($rutas)):
+		return 0;
+	endif;
+
+	$total = 0;
+	$stmt = $pdo->prepare("
+		UPDATE medios
+		SET existente = 0, actualizado = :actualizado
+		WHERE origen = 'local'
+			AND existente = 1
+			AND ruta = :ruta
+	");
+	foreach ($rutas as $ruta):
+		$stmt->execute([':ruta' => $ruta, ':actualizado' => time()]);
+		$total += $stmt->rowCount();
+	endforeach;
+
+	return $total;
+}
+
 function catalogoMarcarYandexAusente(string $rutaRemota): int
 {
 	$pdo = conectarCatalogoMultimedia();
@@ -687,8 +713,8 @@ function catalogoResultadosMultimedia(
 		return [];
 	endif;
 
-	$params = [':existente' => 1];
-	$where = ['existente = :existente'];
+	$params = [':existente' => 1, ':origen' => 'local'];
+	$where = ['origen = :origen', 'existente = :existente'];
 	if ($unarchivo !== null):
 		$rutaArchivo = catalogoNormalizarRuta($unarchivo);
 		$where[] = 'ruta = :ruta';
@@ -714,13 +740,22 @@ function catalogoResultadosMultimedia(
 	}
 
 	$resultados = [];
+	$ausentes = [];
 	foreach ($filas as $fila):
 		$ruta = (string) ($fila['ruta'] ?? '');
 		$tipo = (string) ($fila['tipo'] ?? '');
-		if ($ruta !== '' && in_array($tipo, $tipos, true)):
-			$resultados[] = [$ruta, $tipo];
+		if ($ruta === '' || !in_array($tipo, $tipos, true)):
+			continue;
 		endif;
+		if (!is_file($ruta)):
+			$ausentes[] = $ruta;
+			continue;
+		endif;
+		$resultados[] = [$ruta, $tipo];
 	endforeach;
+	if (!empty($ausentes)):
+		catalogoMarcarLocalesAusentes($pdo, $ausentes);
+	endif;
 
 	return $resultados;
 }

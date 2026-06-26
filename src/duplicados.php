@@ -5,6 +5,7 @@ const DUPLICADOS_JOB_VERSION = 1;
 const DUPLICADOS_FIRMA_VERSION = 2;
 const DUPLICADOS_SCORE_MINIMO = 70;
 const DUPLICADOS_BUCKET_PROBABLE_MAX = 250;
+const DUPLICADOS_BUCKET_NOMBRE_ITEMS_MAX = 12000;
 const DUPLICADOS_CANDIDATOS_PROBABLES_MAX = 2000;
 const DUPLICADOS_GRUPOS_POR_PAGINA = 24;
 const DUPLICADOS_YANDEX_JOB_VERSION = 1;
@@ -19,6 +20,8 @@ const DUPLICADOS_YANDEX_CATALOGO_LOTE = 100;
 const DUPLICADOS_YANDEX_CATALOGO_DELAY_US = 2000000;
 const DUPLICADOS_YANDEX_CATALOGO_DELAY_JITTER_US = 750000;
 const DUPLICADOS_YANDEX_CATALOGO_MAX_PETICIONES = 240;
+const DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US = 600000000;
+const DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US = 1800000000;
 const DUPLICADOS_YANDEX_CATALOGO_ERRORES_CONSECUTIVOS_MAX = 3;
 const DUPLICADOS_VIDEO_FRAMES_FIRMA = 4;
 
@@ -105,11 +108,6 @@ function duplicadosYandexRutaLogWorker(): string
 function duplicadosYandexCatalogoRutaLogWorker(): string
 {
 	return duplicadosDirectorioDatos() . DIRECTORY_SEPARATOR . 'yandex_catalogo_worker.log';
-}
-
-function duplicadosYandexRutaResumenCache(): string
-{
-	return duplicadosDirectorioDatos() . DIRECTORY_SEPARATOR . 'duplicados_yandex_resumen.json';
 }
 
 function duplicadosPrepararDatos(): bool
@@ -819,34 +817,6 @@ function duplicadosResumenLocal(?string $base = null): array
 	return $resumen;
 }
 
-function duplicadosValorNumericoProfundo(mixed $valor, array $campos): float
-{
-	if (!is_array($valor)):
-		return 0.0;
-	endif;
-
-	$buscados = array_map(
-		fn($campo) => preg_replace('/[^a-z0-9]/', '', mb_strtolower((string) $campo, 'UTF-8')),
-		$campos
-	);
-	foreach ($valor as $clave => $contenido):
-		$claveNormalizada = preg_replace('/[^a-z0-9]/', '', mb_strtolower((string) $clave, 'UTF-8'));
-		if (in_array($claveNormalizada, $buscados, true) && is_numeric($contenido)):
-			return (float) $contenido;
-		endif;
-	endforeach;
-	foreach ($valor as $contenido):
-		if (is_array($contenido)):
-			$encontrado = duplicadosValorNumericoProfundo($contenido, $campos);
-			if ($encontrado > 0):
-				return $encontrado;
-			endif;
-		endif;
-	endforeach;
-
-	return 0.0;
-}
-
 function duplicadosTimestamp(mixed $valor): int
 {
 	if (is_numeric($valor)):
@@ -856,52 +826,248 @@ function duplicadosTimestamp(mixed $valor): int
 	return $timestamp !== false ? $timestamp : 0;
 }
 
-function duplicadosAgregarItemYandex(array &$items, array $entrada): void
+function duplicadosObtenerYandexCatalogo(): ?array
 {
-	if (array_key_exists('es_multimedia', $entrada) && empty($entrada['es_multimedia'])):
-		return;
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return null;
 	endif;
 
-	$md5 = strtolower(trim((string) ($entrada['md5'] ?? '')));
-	$sha256 = strtolower(trim((string) ($entrada['sha256'] ?? '')));
-	if ($md5 === '' && $sha256 === ''):
-		return;
+	try {
+		$stmt = $pdo->query("
+			SELECT
+				ruta, ruta_remota, nombre, tipo, mime, tamano, mtime,
+				md5, sha256, ancho, alto, duracion, contenido_hash, perceptual_hash, url, actualizado
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND (md5 <> '' OR sha256 <> '')
+			ORDER BY mtime DESC, ruta_remota ASC
+		");
+		$filas = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+	} catch (PDOException $e) {
+		return null;
+	}
+
+	if (empty($filas)):
+		return null;
 	endif;
 
-	$ruta = normalizarRutaYandexDisk($entrada['ruta'] ?? '');
+	$items = [];
+	$actualizado = 0;
+	foreach ($filas as $fila):
+		$item = duplicadosItemYandexDesdeCatalogoFila($fila);
+		if ($item === null):
+			continue;
+		endif;
+		$actualizado = max($actualizado, (int) ($fila['actualizado'] ?? 0));
+		$items[(string) $item['id']] = $item;
+	endforeach;
+
+	return [
+		'items' => array_values($items),
+		'total' => count($items),
+		'actualizado' => $actualizado,
+	];
+}
+
+function duplicadosItemYandexDesdeCatalogoFila(array $fila): ?array
+{
+	$ruta = normalizarRutaYandexDisk((string) ($fila['ruta_remota'] ?? ''));
 	if ($ruta === '/'):
-		return;
+		$ruta = normalizarRutaYandexDisk(preg_replace('/^yandex:/', '', (string) ($fila['ruta'] ?? '')) ?? '');
 	endif;
+	if ($ruta === '/'):
+		return null;
+	endif;
+	$tipo = (string) ($fila['tipo'] ?? '');
+	$tipoYandex = match ($tipo) {
+		'img' => 'image',
+		'vid' => 'video',
+		default => $tipo,
+	};
+	$tamano = (int) ($fila['tamano'] ?? 0);
+	$mtime = (int) ($fila['mtime'] ?? 0);
 
-	$tamano = isset($entrada['tamano']) && is_numeric($entrada['tamano']) ? (int) $entrada['tamano'] : null;
-	$exif = is_array($entrada['exif'] ?? null) ? $entrada['exif'] : [];
-	$ancho = (int) (($entrada['ancho'] ?? 0) ?: duplicadosValorNumericoProfundo($exif, ['width', 'imagewidth', 'exifimagewidth', 'pixelxdimension']));
-	$alto = (int) (($entrada['alto'] ?? 0) ?: duplicadosValorNumericoProfundo($exif, ['height', 'imageheight', 'exifimageheight', 'pixelydimension']));
-	$duracion = (float) (($entrada['duracion'] ?? 0) ?: duplicadosValorNumericoProfundo($exif, ['duration', 'duracion']));
-	$modificadoOriginal = (string) ($entrada['modificado'] ?? '');
-	$items['yandex:' . $ruta] = [
+	return [
 		'id' => 'yandex:' . $ruta,
 		'origen' => 'yandex',
 		'origen_etiqueta' => 'Yandex.Disk',
 		'ruta' => $ruta,
-		'nombre' => (string) ($entrada['nombre'] ?? basename($ruta)),
-		'tipo' => (string) ($entrada['media_type'] ?? $entrada['tipo'] ?? ''),
-		'mime' => (string) ($entrada['mime'] ?? ''),
+		'nombre' => (string) ($fila['nombre'] ?? basename($ruta)),
+		'tipo' => $tipoYandex,
+		'mime' => (string) ($fila['mime'] ?? ''),
 		'tamano' => $tamano,
 		'tamano_legible' => yandexDiskFormatoTamano($tamano),
-		'modificado' => formatearFechaYandexDisk($modificadoOriginal),
-		'modificado_ts' => duplicadosTimestamp($modificadoOriginal),
-		'md5' => $md5,
-		'sha256' => $sha256,
-		'ancho' => $ancho,
-		'alto' => $alto,
-		'duracion' => $duracion,
-		'contenido_hash' => strtolower((string) ($entrada['contenido_hash'] ?? '')),
-		'perceptual_hash' => strtolower((string) ($entrada['perceptual_hash'] ?? '')),
-		'exif' => $exif,
+		'modificado' => duplicadosFormatearFecha($mtime),
+		'modificado_ts' => $mtime,
+		'md5' => strtolower((string) ($fila['md5'] ?? '')),
+		'sha256' => strtolower((string) ($fila['sha256'] ?? '')),
+		'ancho' => (int) ($fila['ancho'] ?? 0),
+		'alto' => (int) ($fila['alto'] ?? 0),
+		'duracion' => (float) ($fila['duracion'] ?? 0.0),
+		'contenido_hash' => strtolower((string) ($fila['contenido_hash'] ?? '')),
+		'perceptual_hash' => strtolower((string) ($fila['perceptual_hash'] ?? '')),
+		'exif' => [],
 		'url' => urlPanelYandexDisk(dirname($ruta) ?: '/'),
-		'url_externa' => yandexDiskUrlCliente($ruta),
+		'url_externa' => (string) ($fila['url'] ?? '') ?: yandexDiskUrlCliente($ruta),
 	];
+}
+
+function duplicadosEntradaYandexDesdeCatalogoFila(array $fila): ?array
+{
+	$item = duplicadosItemYandexDesdeCatalogoFila($fila);
+	if ($item === null):
+		return null;
+	endif;
+
+	return [
+		'ruta' => (string) $item['ruta'],
+		'nombre' => (string) $item['nombre'],
+		'tamano' => (int) ($item['tamano'] ?? 0),
+		'md5' => (string) ($item['md5'] ?? ''),
+		'sha256' => (string) ($item['sha256'] ?? ''),
+		'hash_actualizado' => (int) ($fila['hash_actualizado'] ?? 0),
+		'hash_intentos' => 0,
+	];
+}
+
+function duplicadosYandexCatalogoResumen(): array
+{
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	$resumen = [
+		'total' => 0,
+		'con_hash' => 0,
+		'sin_hash' => 0,
+		'md5' => 0,
+		'sha256' => 0,
+		'pendientes_hash' => 0,
+		'actualizado' => 0,
+	];
+	if (!$pdo):
+		return $resumen;
+	endif;
+
+	$cutoff = time() - DUPLICADOS_YANDEX_HASH_REVISAR_TTL;
+	try {
+		$stmt = $pdo->prepare("
+			SELECT
+				COUNT(*) AS total,
+				SUM(CASE WHEN md5 <> '' OR sha256 <> '' THEN 1 ELSE 0 END) AS con_hash,
+				SUM(CASE WHEN md5 = '' AND sha256 = '' THEN 1 ELSE 0 END) AS sin_hash,
+				SUM(CASE WHEN md5 <> '' THEN 1 ELSE 0 END) AS md5_total,
+				SUM(CASE WHEN sha256 <> '' THEN 1 ELSE 0 END) AS sha256_total,
+				SUM(CASE WHEN (md5 = '' OR sha256 = '') AND hash_actualizado <= :cutoff THEN 1 ELSE 0 END) AS pendientes_hash,
+				MAX(CASE WHEN hash_actualizado > actualizado THEN hash_actualizado ELSE actualizado END) AS actualizado
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+		");
+		$stmt->execute([':cutoff' => $cutoff]);
+		$fila = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+	} catch (PDOException $e) {
+		return $resumen;
+	}
+
+	return [
+		'total' => (int) ($fila['total'] ?? 0),
+		'con_hash' => (int) ($fila['con_hash'] ?? 0),
+		'sin_hash' => (int) ($fila['sin_hash'] ?? 0),
+		'md5' => (int) ($fila['md5_total'] ?? 0),
+		'sha256' => (int) ($fila['sha256_total'] ?? 0),
+		'pendientes_hash' => (int) ($fila['pendientes_hash'] ?? 0),
+		'actualizado' => (int) ($fila['actualizado'] ?? 0),
+	];
+}
+
+function duplicadosYandexCatalogoCandidatosHash(bool $forzar, int $limite): array
+{
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return ['total' => 0, 'items' => []];
+	endif;
+
+	$limite = max(1, $limite);
+	$cutoff = time() - DUPLICADOS_YANDEX_HASH_REVISAR_TTL;
+	$wherePendiente = $forzar
+		? '1 = 1'
+		: '(md5 = \'\' OR sha256 = \'\') AND hash_actualizado <= :cutoff';
+
+	try {
+		$totalStmt = $pdo->prepare("
+			SELECT COUNT(*)
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND $wherePendiente
+		");
+		if (!$forzar):
+			$totalStmt->bindValue(':cutoff', $cutoff, PDO::PARAM_INT);
+		endif;
+		$totalStmt->execute();
+		$total = (int) $totalStmt->fetchColumn();
+
+		$stmt = $pdo->prepare("
+			SELECT
+				ruta, ruta_remota, nombre, tipo, mime, tamano, mtime,
+				md5, sha256, ancho, alto, duracion, contenido_hash, perceptual_hash,
+				url, actualizado, hash_actualizado
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND $wherePendiente
+			ORDER BY hash_actualizado ASC, actualizado ASC, ruta_remota ASC
+			LIMIT :limite
+		");
+		if (!$forzar):
+			$stmt->bindValue(':cutoff', $cutoff, PDO::PARAM_INT);
+		endif;
+		$stmt->bindValue(':limite', $limite, PDO::PARAM_INT);
+		$stmt->execute();
+		$filas = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+	} catch (PDOException $e) {
+		return ['total' => 0, 'items' => []];
+	}
+
+	$items = [];
+	foreach ($filas as $fila):
+		$entrada = duplicadosEntradaYandexDesdeCatalogoFila($fila);
+		if ($entrada !== null):
+			$items[] = $entrada;
+		endif;
+	endforeach;
+
+	return ['total' => $total, 'items' => $items];
+}
+
+function duplicadosYandexMarcarRevisionCatalogo(string $rutaRemota): void
+{
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return;
+	endif;
+	$rutaRemota = normalizarRutaYandexDisk($rutaRemota);
+	if ($rutaRemota === '/'):
+		return;
+	endif;
+	$rutaCatalogo = 'yandex:' . $rutaRemota;
+	try {
+		$stmt = $pdo->prepare("
+			UPDATE medios
+			SET hash_actualizado = :hash_actualizado,
+				actualizado = :actualizado
+			WHERE origen = 'yandex'
+				AND (ruta = :ruta OR ruta_remota = :ruta_remota)
+		");
+		$stmt->execute([
+			':hash_actualizado' => time(),
+			':actualizado' => time(),
+			':ruta' => $rutaCatalogo,
+			':ruta_remota' => $rutaRemota,
+		]);
+	} catch (PDOException $e) {
+		return;
+	}
 }
 
 function duplicadosTipoVistaPrevia(array $item): string
@@ -1274,14 +1440,36 @@ function duplicadosBuscarYandexCachePorRuta(string $ruta): ?array
 		return null;
 	endif;
 
-	$yandex = duplicadosObtenerYandexCache();
-	foreach ((array) ($yandex['items'] ?? []) as $item):
-		if (normalizarRutaYandexDisk($item['ruta'] ?? '') === $ruta):
-			return $item;
-		endif;
-	endforeach;
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return null;
+	endif;
 
-	return null;
+	try {
+		$stmt = $pdo->prepare("
+			SELECT
+				ruta, ruta_remota, nombre, tipo, mime, tamano, mtime,
+				md5, sha256, ancho, alto, duracion, contenido_hash, perceptual_hash,
+				url, actualizado, hash_actualizado
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND (ruta = :ruta_catalogo OR ruta_remota = :ruta_remota)
+			LIMIT 1
+		");
+		$stmt->execute([
+			':ruta_catalogo' => 'yandex:' . $ruta,
+			':ruta_remota' => $ruta,
+		]);
+		$fila = $stmt->fetch(PDO::FETCH_ASSOC);
+	} catch (PDOException $e) {
+		return null;
+	}
+	if (!is_array($fila)):
+		return null;
+	endif;
+
+	return duplicadosItemYandexDesdeCatalogoFila($fila);
 }
 
 function duplicadosRespuestaMetadatosAjax(string $origen, string $ruta): array
@@ -1351,31 +1539,9 @@ function duplicadosRespuestaMetadatosAjax(string $origen, string $ruta): array
 	];
 }
 
-function duplicadosExtraerRecursosCacheYandex(array $datos): array
-{
-	$recursos = [];
-	if (($datos['type'] ?? '') === 'file'):
-		$recursos[] = $datos;
-	endif;
-
-	foreach ([
-		$datos['_embedded']['items'] ?? null,
-		$datos['items'] ?? null,
-		$datos['resources'] ?? null,
-	] as $items):
-		if (!is_array($items)):
-			continue;
-		endif;
-		foreach ($items as $item):
-			if (is_array($item)):
-				$recursos[] = $item;
-			endif;
-		endforeach;
-	endforeach;
-
-	return $recursos;
-}
-
+/**
+ * @deprecated El nombre se conserva por compatibilidad; la fuente de datos es el catálogo SQLite.
+ */
 function duplicadosObtenerYandexCache(): array
 {
 	static $cache = null;
@@ -1383,44 +1549,16 @@ function duplicadosObtenerYandexCache(): array
 		return $cache;
 	endif;
 
-	$items = [];
-	$actualizado = 0;
-	$indice = rutaArchivoIndiceYandexDisk();
-	if (is_file($indice)):
-		$actualizado = max($actualizado, (int) filemtime($indice));
-		$datos = json_decode((string) file_get_contents($indice), true);
-		if (is_array($datos) && (int) ($datos['version'] ?? 0) === YANDEX_DISK_CACHE_VERSION):
-			foreach ((array) ($datos['resources'] ?? []) as $entrada):
-				if (is_array($entrada)):
-					duplicadosAgregarItemYandex($items, $entrada);
-				endif;
-			endforeach;
-		endif;
+	$catalogo = duplicadosObtenerYandexCatalogo();
+	if (is_array($catalogo) && (int) ($catalogo['total'] ?? 0) > 0):
+		$cache = $catalogo;
+		return $cache;
 	endif;
 
-	foreach (glob(rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'resources*.json') ?: [] as $archivo):
-		if (!is_file($archivo)):
-			continue;
-		endif;
-		$actualizado = max($actualizado, (int) filemtime($archivo));
-		$payload = json_decode((string) file_get_contents($archivo), true);
-		if (!is_array($payload) || (int) ($payload['version'] ?? 0) !== YANDEX_DISK_CACHE_VERSION):
-			continue;
-		endif;
-		$data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-		foreach (duplicadosExtraerRecursosCacheYandex($data) as $recurso):
-			$entrada = yandexDiskExtraerEntradaIndice($recurso);
-			if ($entrada !== null):
-				duplicadosAgregarItemYandex($items, $entrada);
-			endif;
-		endforeach;
-	endforeach;
-
-	ksort($items);
 	$cache = [
-		'items' => array_values($items),
-		'total' => count($items),
-		'actualizado' => $actualizado,
+		'items' => [],
+		'total' => 0,
+		'actualizado' => 0,
 	];
 
 	return $cache;
@@ -1656,10 +1794,24 @@ function duplicadosAgregarBucket(array &$buckets, string $clave, int $indice): v
 	if ($clave === ''):
 		return;
 	endif;
+	if (!array_key_exists($clave, $buckets)):
+		$buckets[$clave] = $indice;
+		return;
+	endif;
+	if ($buckets[$clave] === null):
+		return;
+	endif;
+	if (!is_array($buckets[$clave])):
+		$buckets[$clave] = [(int) $buckets[$clave], $indice];
+		return;
+	endif;
 	$buckets[$clave][] = $indice;
+	if (count($buckets[$clave]) > DUPLICADOS_BUCKET_PROBABLE_MAX):
+		$buckets[$clave] = null;
+	endif;
 }
 
-function duplicadosBucketsItem(array $item, int $indice, array &$buckets): void
+function duplicadosBucketsItem(array $item, int $indice, array &$buckets, bool $incluirNombre = true): void
 {
 	$tipoVista = duplicadosTipoVistaPrevia($item);
 	$perceptual = strtolower(trim((string) ($item['perceptual_hash'] ?? '')));
@@ -1673,9 +1825,11 @@ function duplicadosBucketsItem(array $item, int $indice, array &$buckets): void
 		endif;
 	endif;
 
-	$nombre = duplicadosNombreNormalizado($item);
-	if (mb_strlen($nombre, 'UTF-8') >= 4):
-		duplicadosAgregarBucket($buckets, 'nombre:' . $tipoVista . ':' . $nombre, $indice);
+	if ($incluirNombre):
+		$nombre = duplicadosNombreNormalizado($item);
+		if (mb_strlen($nombre, 'UTF-8') >= 4):
+			duplicadosAgregarBucket($buckets, 'nombre:' . $tipoVista . ':' . $nombre, $indice);
+		endif;
 	endif;
 
 	if ($tipoVista === 'video'):
@@ -1948,23 +2102,225 @@ function duplicadosPaginaDesdeDescriptores(array $items, array $descriptores, in
 	return duplicadosGruposDesdeDescriptores($items, $descriptores);
 }
 
+function duplicadosClaveExactaItem(array $item): string
+{
+	$sha = strtolower(trim((string) ($item['sha256'] ?? '')));
+	if ($sha !== ''):
+		return 'SHA-256 exacto|' . $sha;
+	endif;
+	$md5 = strtolower(trim((string) ($item['md5'] ?? '')));
+	return $md5 !== '' ? 'MD5 exacto|' . $md5 : '';
+}
+
+function duplicadosClaveVisualItem(array $item): string
+{
+	$contenido = strtolower(trim((string) ($item['contenido_hash'] ?? '')));
+	return $contenido !== '' ? 'Contenido visual|' . $contenido : '';
+}
+
+function duplicadosAdjuntarCatalogo(PDO $pdo): bool
+{
+	try {
+		$bases = $pdo->query('PRAGMA database_list')->fetchAll(PDO::FETCH_ASSOC) ?: [];
+		foreach ($bases as $base):
+			if ((string) ($base['name'] ?? '') === 'catalogo'):
+				return true;
+			endif;
+		endforeach;
+		$pdo->exec('ATTACH DATABASE ' . $pdo->quote(catalogoRutaBaseDatos()) . ' AS catalogo');
+		return true;
+	} catch (PDOException $e) {
+		return false;
+	}
+}
+
+function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int $offset): array
+{
+	$pdo = conectarBaseDuplicados();
+	if (!$pdo || !function_exists('catalogoRutaBaseDatos') || !is_file(catalogoRutaBaseDatos()) || !duplicadosAdjuntarCatalogo($pdo)):
+		return [];
+	endif;
+
+	$base = duplicadosNormalizarRutaLocal((string) $base);
+	$prefijo = $base !== '' ? rtrim($base, '/') . '/' : '';
+	$filtroBase = $prefijo !== '' ? ' AND substr(l.ruta, 1, :prefijo_len) = :prefijo' : '';
+	$sql = "
+		SELECT metodo, hash, MAX(orden) AS orden
+		FROM (
+			SELECT 'SHA-256 exacto' AS metodo, l.sha256 AS hash, MAX(l.mtime) AS orden
+			FROM archivos_hash l
+			INNER JOIN catalogo.medios y ON y.sha256 = l.sha256
+			WHERE l.sha256 <> ''
+				AND y.origen = 'yandex'
+				AND y.existente = 1
+				AND y.sha256 <> ''
+				$filtroBase
+			GROUP BY l.sha256
+			UNION ALL
+			SELECT 'MD5 exacto' AS metodo, l.md5 AS hash, MAX(l.mtime) AS orden
+			FROM archivos_hash l
+			INNER JOIN catalogo.medios y ON y.md5 = l.md5
+			WHERE l.sha256 = ''
+				AND y.sha256 = ''
+				AND l.md5 <> ''
+				AND y.origen = 'yandex'
+				AND y.existente = 1
+				AND y.md5 <> ''
+				$filtroBase
+			GROUP BY l.md5
+		)
+		GROUP BY metodo, hash
+		ORDER BY orden DESC, hash ASC
+		LIMIT :limite OFFSET :offset
+	";
+
+	try {
+		$stmt = $pdo->prepare($sql);
+		if ($prefijo !== ''):
+			$stmt->bindValue(':prefijo', $prefijo, PDO::PARAM_STR);
+			$stmt->bindValue(':prefijo_len', strlen($prefijo), PDO::PARAM_INT);
+		endif;
+		$stmt->bindValue(':limite', max(1, $limite), PDO::PARAM_INT);
+		$stmt->bindValue(':offset', max(0, $offset), PDO::PARAM_INT);
+		$stmt->execute();
+		$candidatos = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+	} catch (PDOException $e) {
+		return [];
+	}
+
+	$grupos = [];
+	foreach ($candidatos as $candidato):
+		$metodo = (string) ($candidato['metodo'] ?? '');
+		$hash = (string) ($candidato['hash'] ?? '');
+		if ($metodo === '' || $hash === ''):
+			continue;
+		endif;
+		$campo = $metodo === 'SHA-256 exacto' ? 'sha256' : 'md5';
+		$stmtLocal = $pdo->prepare("SELECT * FROM archivos_hash WHERE $campo = :hash ORDER BY ruta ASC");
+		$stmtLocal->execute([':hash' => $hash]);
+		$locales = [];
+		foreach (($stmtLocal->fetchAll(PDO::FETCH_ASSOC) ?: []) as $filaLocal):
+			$rutaLocal = (string) ($filaLocal['ruta'] ?? '');
+			if (!duplicadosRutaLocalDentroDeBase($rutaLocal, $base) || !is_file($rutaLocal)):
+				continue;
+			endif;
+			$item = duplicadosItemLocalDesdeFila($filaLocal);
+			if ($item !== null):
+				$locales[] = $item;
+			endif;
+		endforeach;
+		if (empty($locales)):
+			continue;
+		endif;
+
+		$stmtYandex = $pdo->prepare("
+			SELECT
+				ruta, ruta_remota, nombre, tipo, mime, tamano, mtime,
+				md5, sha256, ancho, alto, duracion, contenido_hash, perceptual_hash, url, actualizado
+			FROM catalogo.medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND $campo = :hash
+			ORDER BY ruta_remota ASC
+		");
+		$stmtYandex->execute([':hash' => $hash]);
+		$remotos = [];
+		foreach (($stmtYandex->fetchAll(PDO::FETCH_ASSOC) ?: []) as $filaYandex):
+			$item = duplicadosItemYandexDesdeCatalogoFila($filaYandex);
+			if ($item !== null):
+				$remotos[] = $item;
+			endif;
+		endforeach;
+		if (empty($remotos)):
+			continue;
+		endif;
+		$itemsGrupo = array_values(array_merge($locales, $remotos));
+		$grupos[] = duplicadosGrupoDesdeIndices(
+			$itemsGrupo,
+			array_keys($itemsGrupo),
+			100,
+			$metodo,
+			$hash,
+			[$metodo]
+		);
+	endforeach;
+
+	return $grupos;
+}
+
+function duplicadosOrdenarGrupos(array &$grupos): void
+{
+	usort($grupos, static function (array $a, array $b): int {
+		$score = ((int) ($b['score'] ?? 0)) <=> ((int) ($a['score'] ?? 0));
+		if ($score !== 0):
+			return $score;
+		endif;
+		$cruzado = ((int) ($b['cruzado'] ?? false)) <=> ((int) ($a['cruzado'] ?? false));
+		if ($cruzado !== 0):
+			return $cruzado;
+		endif;
+		$conteo = ((int) ($b['conteo'] ?? 0)) <=> ((int) ($a['conteo'] ?? 0));
+		if ($conteo !== 0):
+			return $conteo;
+		endif;
+		return strcmp((string) ($a['hash'] ?? ''), (string) ($b['hash'] ?? ''));
+	});
+}
+
+function duplicadosConstruirGruposTodosPaginados(?string $base, int $limite, int $offset): array
+{
+	$limite = $limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA;
+	$necesarios = max(1, $offset + $limite);
+	$mixtos = duplicadosConstruirGrupos($base, $necesarios, 0, 'mixto');
+	$clavesMixtas = [];
+	foreach ($mixtos as $grupo):
+		$hash = (string) ($grupo['hash'] ?? '');
+		if ($hash !== '' && (int) ($grupo['score'] ?? 0) >= 100):
+			$clavesMixtas[(string) ($grupo['metodo'] ?? $grupo['tipo'] ?? '') . '|' . $hash] = true;
+		endif;
+	endforeach;
+
+	$grupos = $mixtos;
+	foreach (['local', 'remoto'] as $filtro):
+		foreach (duplicadosConstruirGrupos($base, $necesarios, 0, $filtro) as $grupo):
+			$hash = (string) ($grupo['hash'] ?? '');
+			$clave = (string) ($grupo['metodo'] ?? $grupo['tipo'] ?? '') . '|' . $hash;
+			if ($hash !== '' && (int) ($grupo['score'] ?? 0) >= 100 && isset($clavesMixtas[$clave])):
+				continue;
+			endif;
+			$grupos[] = $grupo;
+		endforeach;
+	endforeach;
+	if (empty($grupos)):
+		return [];
+	endif;
+
+	duplicadosOrdenarGrupos($grupos);
+	return array_slice($grupos, $offset, $limite);
+}
+
 function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int $offset = 0, string $filtroOrigen = 'todos'): array
 {
 	$limite = max(0, $limite);
 	$offset = max(0, $offset);
 	$filtroOrigen = duplicadosNormalizarFiltroOrigen($filtroOrigen);
+	if ($filtroOrigen === 'todos'):
+		return duplicadosConstruirGruposTodosPaginados($base, $limite, $offset);
+	endif;
+	if ($filtroOrigen === 'mixto'):
+		return duplicadosConstruirGruposMixtosExactos($base, $limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset);
+	endif;
 	$paginaNecesaria = $limite > 0 ? $offset + $limite : PHP_INT_MAX;
-	$items = array_values(array_merge(
-		duplicadosObtenerLocalesIndexados($base),
-		duplicadosObtenerYandexCache()['items']
-	));
 	if ($filtroOrigen === 'local' || $filtroOrigen === 'remoto'):
-		$origenBuscado = $filtroOrigen === 'remoto' ? 'yandex' : 'local';
-		$items = array_values(array_filter(
-			$items,
-			static fn($item) => (string) ($item['origen'] ?? '') === $origenBuscado
-		));
+		$items = $filtroOrigen === 'remoto'
+			? (duplicadosObtenerYandexCache()['items'] ?? [])
+			: duplicadosObtenerLocalesIndexados($base);
 		$filtroOrigen = 'todos';
+	else:
+		$items = array_values(array_merge(
+			duplicadosObtenerLocalesIndexados($base),
+			duplicadosObtenerYandexCache()['items']
+		));
 	endif;
 	$total = count($items);
 	if ($total < 2):
@@ -1972,8 +2328,9 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 	endif;
 
 	$buckets = [];
+	$incluirBucketsNombre = $total <= DUPLICADOS_BUCKET_NOMBRE_ITEMS_MAX;
 	foreach ($items as $indice => $item):
-		duplicadosBucketsItem($item, $indice, $buckets);
+		duplicadosBucketsItem($item, $indice, $buckets, $incluirBucketsNombre);
 	endforeach;
 
 	$descriptores = [];
@@ -1983,22 +2340,54 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 	$primerosVisuales = [];
 	$exactoPorIndice = [];
 	$visualPorIndice = [];
-	foreach ($items as $indice => $item):
-		$sha = strtolower(trim((string) ($item['sha256'] ?? '')));
-		$md5 = strtolower(trim((string) ($item['md5'] ?? '')));
-		$contenido = strtolower(trim((string) ($item['contenido_hash'] ?? '')));
-		if ($sha !== ''):
-			$clave = 'SHA-256 exacto|' . $sha;
-			duplicadosRegistrarClaveGrupo($clave, $indice, $primerosExactos, $exactos);
-		elseif ($md5 !== ''):
-			$clave = 'MD5 exacto|' . $md5;
-			duplicadosRegistrarClaveGrupo($clave, $indice, $primerosExactos, $exactos);
-		endif;
-		if ($contenido !== ''):
-			$clave = 'Contenido visual|' . $contenido;
-			duplicadosRegistrarClaveGrupo($clave, $indice, $primerosVisuales, $visuales);
-		endif;
-	endforeach;
+	if ($filtroOrigen === 'mixto'):
+		$exactosYandex = [];
+		$visualesYandex = [];
+		foreach ($items as $indice => $item):
+			if ((string) ($item['origen'] ?? '') !== 'yandex'):
+				continue;
+			endif;
+			$claveExacta = duplicadosClaveExactaItem($item);
+			if ($claveExacta !== ''):
+				$exactosYandex[$claveExacta][] = $indice;
+			endif;
+			$claveVisual = duplicadosClaveVisualItem($item);
+			if ($claveVisual !== ''):
+				$visualesYandex[$claveVisual][] = $indice;
+			endif;
+		endforeach;
+		foreach ($items as $indice => $item):
+			if ((string) ($item['origen'] ?? '') !== 'local'):
+				continue;
+			endif;
+			$claveExacta = duplicadosClaveExactaItem($item);
+			if ($claveExacta !== '' && isset($exactosYandex[$claveExacta])):
+				if (!isset($exactos[$claveExacta])):
+					$exactos[$claveExacta] = $exactosYandex[$claveExacta];
+				endif;
+				$exactos[$claveExacta][] = $indice;
+			endif;
+			$claveVisual = duplicadosClaveVisualItem($item);
+			if ($claveVisual !== '' && isset($visualesYandex[$claveVisual])):
+				if (!isset($visuales[$claveVisual])):
+					$visuales[$claveVisual] = $visualesYandex[$claveVisual];
+				endif;
+				$visuales[$claveVisual][] = $indice;
+			endif;
+		endforeach;
+		unset($exactosYandex, $visualesYandex);
+	else:
+		foreach ($items as $indice => $item):
+			$claveExacta = duplicadosClaveExactaItem($item);
+			if ($claveExacta !== ''):
+				duplicadosRegistrarClaveGrupo($claveExacta, $indice, $primerosExactos, $exactos);
+			endif;
+			$claveVisual = duplicadosClaveVisualItem($item);
+			if ($claveVisual !== ''):
+				duplicadosRegistrarClaveGrupo($claveVisual, $indice, $primerosVisuales, $visuales);
+			endif;
+		endforeach;
+	endif;
 	unset($primerosExactos, $primerosVisuales);
 
 	foreach ($exactos as $clave => $indices):
@@ -2044,6 +2433,9 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 	$ventanaBusqueda = $limite > 0 ? $offset + $limite : DUPLICADOS_CANDIDATOS_PROBABLES_MAX;
 	$maxProbables = max(DUPLICADOS_CANDIDATOS_PROBABLES_MAX, $ventanaBusqueda * 10);
 	foreach ($buckets as $claveBucket => $indices):
+		if (!is_array($indices)):
+			continue;
+		endif;
 		if (
 			str_starts_with($claveBucket, 'sha256:')
 			|| str_starts_with($claveBucket, 'md5:')
@@ -2534,150 +2926,29 @@ function duplicadosEjecutarTrabajo(string $id): void
 	fclose($lock);
 }
 
-function duplicadosYandexAgregarRecursoCache(array &$items, array $entrada): void
-{
-	$ruta = normalizarRutaYandexDisk((string) ($entrada['ruta'] ?? ''));
-	if ($ruta === '/' || empty($entrada['es_multimedia'])):
-		return;
-	endif;
-
-	$entrada['ruta'] = $ruta;
-	if (trim((string) ($entrada['nombre'] ?? '')) === ''):
-		$entrada['nombre'] = basename($ruta);
-	endif;
-	$items[$ruta] = array_replace(is_array($items[$ruta] ?? null) ? $items[$ruta] : [], $entrada);
-}
-
-function duplicadosYandexRecursosCache(): array
-{
-	$items = [];
-	$indice = rutaArchivoIndiceYandexDisk();
-	if (is_file($indice)):
-		$datos = json_decode((string) file_get_contents($indice), true);
-		if (is_array($datos) && (int) ($datos['version'] ?? 0) === YANDEX_DISK_CACHE_VERSION):
-			foreach ((array) ($datos['resources'] ?? []) as $ruta => $entrada):
-				if (!is_array($entrada)):
-					continue;
-				endif;
-				if (empty($entrada['ruta']) && is_string($ruta)):
-					$entrada['ruta'] = $ruta;
-				endif;
-				duplicadosYandexAgregarRecursoCache($items, $entrada);
-			endforeach;
-		endif;
-	endif;
-
-	foreach (glob(rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'resources*.json') ?: [] as $archivo):
-		if (!is_file($archivo)):
-			continue;
-		endif;
-		$payload = json_decode((string) file_get_contents($archivo), true);
-		if (!is_array($payload) || (int) ($payload['version'] ?? 0) !== YANDEX_DISK_CACHE_VERSION):
-			continue;
-		endif;
-		$data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-		foreach (duplicadosExtraerRecursosCacheYandex($data) as $recurso):
-			$entrada = yandexDiskExtraerEntradaIndice($recurso, false);
-			if ($entrada !== null):
-				duplicadosYandexAgregarRecursoCache($items, $entrada);
-			endif;
-		endforeach;
-	endforeach;
-
-	ksort($items);
-	return array_values($items);
-}
-
-function duplicadosYandexHashRevisadoTimestamp(array $entrada): int
-{
-	$valor = $entrada['hash_revisado_en'] ?? 0;
-	return duplicadosTimestamp($valor);
-}
-
-function duplicadosYandexDebeRevisarHash(array $entrada, bool $forzar = false): bool
-{
-	if ($forzar):
-		return true;
-	endif;
-
-	$md5 = trim((string) ($entrada['md5'] ?? ''));
-	$sha256 = trim((string) ($entrada['sha256'] ?? ''));
-	if ($md5 !== '' && $sha256 !== ''):
-		return false;
-	endif;
-
-	$revisado = duplicadosYandexHashRevisadoTimestamp($entrada);
-	return $revisado <= 0 || (time() - $revisado) >= DUPLICADOS_YANDEX_HASH_REVISAR_TTL;
-}
-
+/**
+ * @deprecated El nombre se conserva por compatibilidad; la firma se calcula desde SQLite.
+ */
 function duplicadosYandexFirmaArchivosCache(int &$actualizado): string
 {
-	$actualizado = 0;
-	$partes = [];
-	foreach ([rutaArchivoIndiceYandexDisk(), ...(glob(rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'resources*.json') ?: [])] as $archivo):
-		if (!is_file($archivo)):
-			continue;
-		endif;
-		$mtime = (int) filemtime($archivo);
-		$actualizado = max($actualizado, $mtime);
-		$partes[] = basename($archivo) . ':' . $mtime . ':' . (int) filesize($archivo);
-	endforeach;
-	sort($partes);
-	return sha1(implode('|', $partes));
+	$resumen = duplicadosYandexCatalogoResumen();
+	$actualizado = (int) ($resumen['actualizado'] ?? 0);
+	return sha1(implode('|', [
+		(int) ($resumen['total'] ?? 0),
+		(int) ($resumen['con_hash'] ?? 0),
+		(int) ($resumen['md5'] ?? 0),
+		(int) ($resumen['sha256'] ?? 0),
+		$actualizado,
+	]));
 }
 
+/**
+ * @deprecated El nombre se conserva por compatibilidad; el resumen se calcula desde SQLite.
+ */
 function duplicadosYandexResumenCache(bool $permitirRecalcular = true): array
 {
-	$actualizado = 0;
-	$firma = duplicadosYandexFirmaArchivosCache($actualizado);
-	$archivoResumen = duplicadosYandexRutaResumenCache();
-	$cacheResumen = duplicadosLeerJson($archivoResumen);
-	if (is_array($cacheResumen) && (int) ($cacheResumen['version'] ?? 0) === DUPLICADOS_YANDEX_RESUMEN_VERSION):
-		$resumenCache = is_array($cacheResumen['resumen'] ?? null) ? $cacheResumen['resumen'] : null;
-		if ($resumenCache !== null && (!$permitirRecalcular || (string) ($cacheResumen['firma'] ?? '') === $firma)):
-			$resumenCache['actualizado'] = max((int) ($resumenCache['actualizado'] ?? 0), $actualizado);
-			return $resumenCache;
-		endif;
-	endif;
-
-	$recursos = duplicadosYandexRecursosCache();
-
-	$resumen = [
-		'total' => count($recursos),
-		'con_hash' => 0,
-		'sin_hash' => 0,
-		'md5' => 0,
-		'sha256' => 0,
-		'pendientes_hash' => 0,
-		'actualizado' => $actualizado,
-	];
-	foreach ($recursos as $entrada):
-		$tieneMd5 = trim((string) ($entrada['md5'] ?? '')) !== '';
-		$tieneSha256 = trim((string) ($entrada['sha256'] ?? '')) !== '';
-		if ($tieneMd5 || $tieneSha256):
-			$resumen['con_hash']++;
-		else:
-			$resumen['sin_hash']++;
-		endif;
-		if ($tieneMd5):
-			$resumen['md5']++;
-		endif;
-		if ($tieneSha256):
-			$resumen['sha256']++;
-		endif;
-		if (duplicadosYandexDebeRevisarHash($entrada, false)):
-			$resumen['pendientes_hash']++;
-		endif;
-	endforeach;
-
-	duplicadosGuardarJson($archivoResumen, [
-		'version' => DUPLICADOS_YANDEX_RESUMEN_VERSION,
-		'firma' => $firma,
-		'updated_at' => time(),
-		'resumen' => $resumen,
-	]);
-
-	return $resumen;
+	unset($permitirRecalcular);
+	return duplicadosYandexCatalogoResumen();
 }
 
 function duplicadosYandexLeerTrabajo(string $id): ?array
@@ -2845,17 +3116,29 @@ function duplicadosYandexDebePausar(array $respuesta, int $erroresConsecutivos):
 
 function duplicadosYandexRegistrarRevision(array $candidato, ?array $recurso, int $status, string $error, int $intentos): bool
 {
-	$entrada = $recurso !== null ? yandexDiskExtraerEntradaIndice($recurso, false) : null;
-	if ($entrada === null):
-		$entrada = $candidato;
+	unset($status, $error, $intentos);
+	$ruta = normalizarRutaYandexDisk((string) ($candidato['ruta'] ?? ''));
+	if ($ruta === '/'):
+		return false;
 	endif;
 
-	$entrada['ruta'] = normalizarRutaYandexDisk((string) ($entrada['ruta'] ?? $candidato['ruta'] ?? ''));
-	$entrada['hash_revisado_en'] = gmdate(DATE_ATOM);
-	$entrada['hash_status'] = $status;
-	$entrada['hash_error'] = $error;
-	$entrada['hash_intentos'] = $intentos;
-	return actualizarIndiceEntradaYandexDisk($entrada);
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return false;
+	endif;
+
+	if ($recurso !== null):
+		$entrada = yandexDiskExtraerEntradaIndice($recurso, false);
+		if ($entrada !== null):
+			$entrada['ruta'] = normalizarRutaYandexDisk((string) ($entrada['ruta'] ?? $ruta));
+			$guardado = function_exists('catalogoGuardarYandex') && catalogoGuardarYandex($pdo, $entrada, time());
+			duplicadosYandexMarcarRevisionCatalogo($ruta);
+			return $guardado;
+		endif;
+	endif;
+
+	duplicadosYandexMarcarRevisionCatalogo($ruta);
+	return true;
 }
 
 function duplicadosYandexEjecutarTrabajo(string $id): void
@@ -2898,17 +3181,14 @@ function duplicadosYandexEjecutarTrabajo(string $id): void
 		duplicadosYandexActualizarTrabajo($id, [
 			'estado' => 'preparando',
 			'started_at' => time(),
-			'mensaje' => 'Leyendo cache local de Yandex...',
+			'mensaje' => 'Consultando catálogo SQLite de Yandex...',
 		]);
 
 		$forzar = !empty($trabajo['forzar']);
-		$candidatos = array_values(array_filter(
-			duplicadosYandexRecursosCache(),
-			static fn($entrada) => duplicadosYandexDebeRevisarHash($entrada, $forzar)
-		));
-		$totalPendientes = count($candidatos);
-		$limite = min($totalPendientes, DUPLICADOS_YANDEX_HASH_MAX_POR_TRABAJO);
-		$candidatos = array_slice($candidatos, 0, $limite);
+		$pendientes = duplicadosYandexCatalogoCandidatosHash($forzar, DUPLICADOS_YANDEX_HASH_MAX_POR_TRABAJO);
+		$totalPendientes = (int) ($pendientes['total'] ?? 0);
+		$candidatos = is_array($pendientes['items'] ?? null) ? $pendientes['items'] : [];
+		$limite = count($candidatos);
 
 		if ($limite <= 0):
 			duplicadosYandexActualizarTrabajo($id, [
@@ -2985,8 +3265,8 @@ function duplicadosYandexEjecutarTrabajo(string $id): void
 				else:
 					$error = (string) ($respuesta['error'] ?? 'No se pudo consultar el recurso en Yandex.');
 					if ($status === 404):
-						if (function_exists('yandexDiskMarcarRecursoAusente')):
-							yandexDiskMarcarRecursoAusente($ruta, 'hash_404');
+						if (function_exists('catalogoMarcarYandexAusente')):
+							catalogoMarcarYandexAusente($ruta);
 						endif;
 						$omitidos++;
 						$erroresConsecutivos = 0;
@@ -3162,6 +3442,9 @@ function duplicadosYandexCatalogoCrearTrabajo(): array
 		'delay_ms' => intdiv(DUPLICADOS_YANDEX_CATALOGO_DELAY_US, 1000),
 		'limite_por_lote' => DUPLICADOS_YANDEX_CATALOGO_LOTE,
 		'max_peticiones_tanda' => DUPLICADOS_YANDEX_CATALOGO_MAX_PETICIONES,
+		'cooldown_ms' => intdiv(DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US, 1000),
+		'cooldown_error_ms' => intdiv(DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US, 1000),
+		'reanudar_en' => 0,
 	];
 }
 
@@ -3178,6 +3461,9 @@ function duplicadosYandexCatalogoIniciarTrabajo(bool $forzar = false): array
 			'estado' => 'queued',
 			'cancel_requested' => false,
 			'finished_at' => 0,
+			'cooldown_ms' => intdiv(DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US, 1000),
+			'cooldown_error_ms' => intdiv(DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US, 1000),
+			'reanudar_en' => 0,
 			'mensaje' => 'Reanudando catálogo remoto de Yandex...',
 		]) ?? $actual;
 	else:
@@ -3198,6 +3484,66 @@ function duplicadosYandexCatalogoIniciarTrabajo(bool $forzar = false): array
 	endif;
 
 	return ['ok' => (bool) $lanzado['ok'], 'job' => $trabajo, 'error' => (string) ($lanzado['error'] ?? '')];
+}
+
+function duplicadosYandexCatalogoLockLibre(string $id): bool
+{
+	$id = preg_replace('/[^a-zA-Z0-9_-]/', '', $id);
+	if ($id === ''):
+		return false;
+	endif;
+
+	$lock = fopen(duplicadosYandexCatalogoRutaLockTrabajo($id), 'c');
+	if ($lock === false):
+		return false;
+	endif;
+	$libre = flock($lock, LOCK_EX | LOCK_NB);
+	if ($libre):
+		flock($lock, LOCK_UN);
+	endif;
+	fclose($lock);
+	return $libre;
+}
+
+function duplicadosYandexCatalogoAutoReanudar(?array $trabajo): ?array
+{
+	if (!is_array($trabajo)):
+		return $trabajo;
+	endif;
+
+	$id = (string) ($trabajo['id'] ?? '');
+	$cola = is_array($trabajo['cola'] ?? null) ? $trabajo['cola'] : [];
+	if ($id === '' || empty($cola)):
+		return $trabajo;
+	endif;
+
+	$estado = (string) ($trabajo['estado'] ?? '');
+	$reanudarEn = (int) ($trabajo['reanudar_en'] ?? 0);
+	$cooldownMax = duplicadosYandexCatalogoSegundos(max(DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US, DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US));
+	$stale = (time() - (int) ($trabajo['updated_at'] ?? 0)) > ($cooldownMax + 300);
+
+	if (duplicadosYandexCatalogoTrabajoActivo($trabajo)):
+		if (!$stale || !duplicadosYandexCatalogoLockLibre($id)):
+			return $trabajo;
+		endif;
+		$trabajo = duplicadosYandexCatalogoActualizarTrabajo($id, [
+			'estado' => 'completado_parcial',
+			'finished_at' => time(),
+			'cancel_requested' => false,
+			'reanudar_en' => 0,
+			'mensaje' => 'El catálogo Yandex quedó interrumpido; reanudando automáticamente...',
+		]) ?? $trabajo;
+		$estado = (string) ($trabajo['estado'] ?? '');
+	endif;
+
+	$reanudarPausado = $estado === 'pausado' && $reanudarEn > 0 && $reanudarEn <= time();
+	$reanudarParcial = $estado === 'completado_parcial' && $reanudarEn <= time();
+	if (!$reanudarParcial && !$reanudarPausado):
+		return $trabajo;
+	endif;
+
+	$resultado = duplicadosYandexCatalogoIniciarTrabajo(false);
+	return is_array($resultado['job'] ?? null) ? $resultado['job'] : $trabajo;
 }
 
 function duplicadosYandexCatalogoCancelarTrabajo(): array
@@ -3223,6 +3569,38 @@ function duplicadosYandexCatalogoDormirConCadencia(): void
 		? random_int(0, DUPLICADOS_YANDEX_CATALOGO_DELAY_JITTER_US)
 		: 0;
 	usleep(DUPLICADOS_YANDEX_CATALOGO_DELAY_US + $jitter);
+}
+
+function duplicadosYandexCatalogoSegundos(int $microsegundos): int
+{
+	return max(1, (int) ceil(max(0, $microsegundos) / 1000000));
+}
+
+function duplicadosYandexCatalogoDormirCancelable(string $id, int $microsegundos): bool
+{
+	$restante = max(0, $microsegundos);
+	while ($restante > 0):
+		$trabajo = duplicadosYandexCatalogoLeerTrabajo($id);
+		if (!empty($trabajo['cancel_requested'])):
+			return false;
+		endif;
+		$pausa = min($restante, 5000000);
+		usleep($pausa);
+		$restante -= $pausa;
+	endwhile;
+
+	return true;
+}
+
+function duplicadosYandexCatalogoErrorReintetable(array $respuesta): bool
+{
+	$status = (int) ($respuesta['status'] ?? 0);
+	if (in_array($status, [0, 429, 500, 502, 503, 504], true)):
+		return true;
+	endif;
+
+	$error = mb_strtolower((string) ($respuesta['error'] ?? ''), 'UTF-8');
+	return $error !== '' && (str_contains($error, 'tardó') || str_contains($error, 'timeout') || str_contains($error, 'timed out') || str_contains($error, 'too many'));
 }
 
 function duplicadosYandexCatalogoDebePausar(array $respuesta, int $erroresConsecutivos): bool
@@ -3349,9 +3727,10 @@ function duplicadosYandexCatalogoEjecutarTrabajo(string $id): void
 			endif;
 
 			if ($peticionesTanda >= DUPLICADOS_YANDEX_CATALOGO_MAX_PETICIONES):
+				$reanudarEn = time() + duplicadosYandexCatalogoSegundos(DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US);
 				duplicadosYandexCatalogoActualizarTrabajo($id, [
-					'estado' => 'completado_parcial',
-					'finished_at' => time(),
+					'estado' => 'catalogando',
+					'finished_at' => 0,
 					'cola' => $cola,
 					'directorios_vistos' => $vistos,
 					'directorios_pendientes' => count($cola),
@@ -3363,9 +3742,36 @@ function duplicadosYandexCatalogoEjecutarTrabajo(string $id): void
 					'ausentes' => $ausentes,
 					'omitidos' => $omitidos,
 					'errores' => $errores,
-					'mensaje' => 'Tanda de catálogo Yandex completada. Quedan ' . count($cola) . ' carpetas/páginas pendientes.',
+					'reanudar_en' => $reanudarEn,
+					'mensaje' => 'Pausa de seguridad de Yandex: ' . count($cola) . ' carpetas/páginas pendientes. Se reanuda automáticamente en ' . duplicadosYandexCatalogoSegundos(DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US) . ' segundos.',
 				]);
-				return;
+				if (!duplicadosYandexCatalogoDormirCancelable($id, DUPLICADOS_YANDEX_CATALOGO_COOLDOWN_US)):
+					duplicadosYandexCatalogoActualizarTrabajo($id, [
+						'estado' => 'cancelado',
+						'finished_at' => time(),
+						'cola' => $cola,
+						'directorios_vistos' => $vistos,
+						'directorios_pendientes' => count($cola),
+						'procesados' => $procesados,
+						'peticiones' => $peticiones,
+						'directorios' => $directorios,
+						'archivos' => $archivos,
+						'actualizados' => $actualizados,
+						'ausentes' => $ausentes,
+						'omitidos' => $omitidos,
+						'errores' => $errores,
+						'reanudar_en' => 0,
+						'mensaje' => 'Catálogo remoto de Yandex cancelado durante la pausa de seguridad.',
+					]);
+					return;
+				endif;
+				$peticionesTanda = 0;
+				duplicadosYandexCatalogoActualizarTrabajo($id, [
+					'estado' => 'catalogando',
+					'reanudar_en' => 0,
+					'mensaje' => 'Reanudando catálogo remoto de Yandex...',
+				]);
+				continue;
 			endif;
 
 			$itemCola = array_shift($cola);
@@ -3387,9 +3793,11 @@ function duplicadosYandexCatalogoEjecutarTrabajo(string $id): void
 				$erroresConsecutivos++;
 				if (duplicadosYandexCatalogoDebePausar($respuesta, $erroresConsecutivos)):
 					array_unshift($cola, ['ruta' => $ruta, 'offset' => $offset]);
+					$reintetable = duplicadosYandexCatalogoErrorReintetable($respuesta);
+					$reanudarEn = $reintetable ? time() + duplicadosYandexCatalogoSegundos(DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US) : 0;
 					duplicadosYandexCatalogoActualizarTrabajo($id, [
-						'estado' => 'pausado',
-						'finished_at' => time(),
+						'estado' => $reintetable ? 'catalogando' : 'pausado',
+						'finished_at' => $reintetable ? 0 : time(),
 						'cola' => $cola,
 						'directorios_vistos' => $vistos,
 						'directorios_pendientes' => count($cola),
@@ -3401,8 +3809,41 @@ function duplicadosYandexCatalogoEjecutarTrabajo(string $id): void
 						'ausentes' => $ausentes,
 						'omitidos' => $omitidos,
 						'errores' => $errores,
-						'mensaje' => 'Yandex respondió lento o con error; se pausó el catálogo para no insistir.',
+						'reanudar_en' => $reanudarEn,
+						'mensaje' => $reintetable
+							? 'Yandex respondió lento o con error temporal; pausa prudente. Se reanuda automáticamente en ' . duplicadosYandexCatalogoSegundos(DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US) . ' segundos.'
+							: 'Yandex respondió con error de autorización; se pausó el catálogo.',
 					]);
+					if ($reintetable):
+						if (!duplicadosYandexCatalogoDormirCancelable($id, DUPLICADOS_YANDEX_CATALOGO_ERROR_COOLDOWN_US)):
+							duplicadosYandexCatalogoActualizarTrabajo($id, [
+								'estado' => 'cancelado',
+								'finished_at' => time(),
+								'cola' => $cola,
+								'directorios_vistos' => $vistos,
+								'directorios_pendientes' => count($cola),
+								'procesados' => $procesados,
+								'peticiones' => $peticiones,
+								'directorios' => $directorios,
+								'archivos' => $archivos,
+								'actualizados' => $actualizados,
+								'ausentes' => $ausentes,
+								'omitidos' => $omitidos,
+								'errores' => $errores,
+								'reanudar_en' => 0,
+								'mensaje' => 'Catálogo remoto de Yandex cancelado durante la pausa por error temporal.',
+							]);
+							return;
+						endif;
+						$erroresConsecutivos = 0;
+						$peticionesTanda = 0;
+						duplicadosYandexCatalogoActualizarTrabajo($id, [
+							'estado' => 'catalogando',
+							'reanudar_en' => 0,
+							'mensaje' => 'Reintentando catálogo remoto de Yandex...',
+						]);
+						continue;
+					endif;
 					return;
 				endif;
 				$omitidos++;
@@ -3519,14 +3960,23 @@ function duplicadosYandexCatalogoEjecutarTrabajo(string $id): void
 function duplicadosEstado(array $fuente = [], bool $incluirGrupos = false): array
 {
 	$base = duplicadosResolverBaseLocal($fuente['ruta'] ?? ($_GET['ruta'] ?? ''));
-	$yandex = duplicadosObtenerYandexCache();
 	$local = duplicadosResumenLocal($base);
 	$grupos = $incluirGrupos ? duplicadosConstruirGrupos($base) : [];
 	$trabajo = duplicadosLeerTrabajoActual();
 	$trabajoYandex = duplicadosYandexLeerTrabajoActual();
 	$trabajoCatalogoYandex = duplicadosYandexCatalogoLeerTrabajoActual();
-	$yandexResumen = duplicadosYandexResumenCache(!duplicadosYandexTrabajoActivo($trabajoYandex));
+	$trabajoCatalogoYandex = duplicadosYandexCatalogoAutoReanudar($trabajoCatalogoYandex);
+	$yandexResumen = duplicadosYandexResumenCache($incluirGrupos && !duplicadosYandexTrabajoActivo($trabajoYandex));
+	$yandex = $incluirGrupos
+		? duplicadosObtenerYandexCache()
+		: [
+			'total' => (int) ($yandexResumen['total'] ?? 0),
+			'actualizado' => (int) ($yandexResumen['actualizado'] ?? 0),
+		];
 	$catalogoYandex = duplicadosYandexCatalogoConteo();
+	$trabajo = duplicadosTrabajoPublico($trabajo);
+	$trabajoYandex = duplicadosTrabajoPublico($trabajoYandex);
+	$trabajoCatalogoYandex = duplicadosTrabajoPublico($trabajoCatalogoYandex);
 
 	return [
 		'base' => $base,
@@ -3550,6 +4000,20 @@ function duplicadosEstado(array $fuente = [], bool $incluirGrupos = false): arra
 		'resumen' => $incluirGrupos ? duplicadosResumenGrupos($grupos) : duplicadosResumenVacio(true),
 		'job' => $trabajo,
 	];
+}
+
+function duplicadosTrabajoPublico(?array $trabajo): ?array
+{
+	if ($trabajo === null):
+		return null;
+	endif;
+
+	unset(
+		$trabajo['cola'],
+		$trabajo['directorios_vistos']
+	);
+
+	return $trabajo;
 }
 
 function duplicadosEstadoPaginaGrupos(array $fuente = [], int $offset = 0, int $limite = DUPLICADOS_GRUPOS_POR_PAGINA, string $filtroOrigen = 'todos'): array
@@ -3675,7 +4139,7 @@ function renderizarPanelDuplicados(array $estado): string
 		'<div class="duplicados-panel-resumen">' .
 		'<strong>Duplicados</strong>' .
 		'<span>Local: ' . escaparHtml(duplicadosTextoLocalFirmas($local)) . '</span>' .
-		'<span>Yandex cache: ' . (int) ($yandex['total'] ?? 0) . ' con hash · ' . (int) ($yandex['pendientes_hash'] ?? 0) . ' pendientes</span>' .
+		'<span>Yandex firmas: ' . (int) ($yandex['total'] ?? 0) . ' con hash · ' . (int) ($yandex['pendientes_hash'] ?? 0) . ' pendientes</span>' .
 		'<span>Catálogo Yandex: ' . (int) ($yandex['catalogo_total'] ?? 0) . ' multimedia</span>' .
 		'<span>' . escaparHtml($resumenTexto) . '</span>' .
 		'</div>' .

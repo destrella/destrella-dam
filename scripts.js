@@ -42,6 +42,28 @@ function ocultarCargaNavegacion(){
 	document.body.classList.remove('navegacion-cargando');
 }
 
+const DAM_DUPLICADOS_LOCALES_DESACTUALIZADOS = 'dam.duplicados.localesDesactualizados';
+let marcaDuplicadosLocalesDesactualizadosMemoria = '';
+
+function leerMarcaDuplicadosLocalesDesactualizados(){
+	try {
+		return window.sessionStorage.getItem(DAM_DUPLICADOS_LOCALES_DESACTUALIZADOS) || marcaDuplicadosLocalesDesactualizadosMemoria;
+	} catch (error) {
+		return marcaDuplicadosLocalesDesactualizadosMemoria;
+	}
+}
+
+function marcarDuplicadosLocalesDesactualizados(){
+	const marca = String(Date.now());
+	marcaDuplicadosLocalesDesactualizadosMemoria = marca;
+	try {
+		window.sessionStorage.setItem(DAM_DUPLICADOS_LOCALES_DESACTUALIZADOS, marca);
+	} catch (error) {
+		// La señal en memoria mantiene actualizada la vista aunque sessionStorage no esté disponible.
+	}
+	window.dispatchEvent(new CustomEvent('dam:duplicados-locales-desactualizados', { detail: { marca } }));
+}
+
 function respuestaGuardadoCompletado(html){
 	const contenedor = document.createElement('div');
 	contenedor.innerHTML = html;
@@ -548,6 +570,9 @@ function mover(id, accion){
 			if (xhr.status === 200){
 				let textoRespuesta = xhr.responseText.split('\n');
 				if(textoRespuesta[0] == 1){
+					if (['archivar', 'borrar', 'caras'].includes(accion)) {
+						marcarDuplicadosLocalesDesactualizados();
+					}
 
 					const mensajeExito =
 					'<span style="color:green">' +
@@ -841,6 +866,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			if (guardar) {
 				escribirStorage(clavePestanaLateral, nombre);
 			}
+			document.dispatchEvent(new CustomEvent('dam:sidebar-tab-activated', { detail: { nombre } }));
 		}
 
 		const pestañaInicial = tabsLaterales.find(tab => tab.classList.contains('activo'))?.dataset.sidebarTab || pestanaLateralDefecto;
@@ -922,6 +948,8 @@ document.addEventListener('DOMContentLoaded', function () {
 			let filtroOrigenDuplicados = 'todos';
 			let modalMetadatosDuplicados = null;
 			let cargaModalMetadatosDuplicados = 0;
+			let marcaDuplicadosLocalesVista = leerMarcaDuplicadosLocalesDesactualizados();
+			let recargaDuplicadosLocalesPendiente = false;
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
@@ -952,6 +980,25 @@ document.addEventListener('DOMContentLoaded', function () {
 				return etiqueta
 					? `No hay duplicados ${etiqueta} exactos ni probables con las firmas disponibles.`
 					: 'No hay duplicados exactos ni probables con las firmas disponibles.';
+			}
+
+			function formatearCuentaRegresivaDuplicados(segundos) {
+				segundos = Math.max(0, Math.ceil(Number(segundos) || 0));
+				const minutos = Math.floor(segundos / 60);
+				const resto = segundos % 60;
+				if (minutos <= 0) return `${resto}s`;
+				return `${minutos} min ${resto.toString().padStart(2, '0')}s`;
+			}
+
+			function mensajeCatalogoYandexConReanudacion(jobCatalogoYandex, fallback) {
+				let mensaje = jobCatalogoYandex?.mensaje || fallback;
+				const reanudarEn = Number(jobCatalogoYandex?.reanudar_en || 0);
+				const restantes = reanudarEn > 0 ? reanudarEn - (Date.now() / 1000) : 0;
+				if (restantes > 0) {
+					mensaje = mensaje.replace(/\s*Se reanuda automáticamente en \d+ segundos\./, '');
+					mensaje = `${mensaje} Reanuda en ${formatearCuentaRegresivaDuplicados(restantes)}.`;
+				}
+				return mensaje;
 			}
 
 			function actualizarBotonesFiltroOrigenDuplicados() {
@@ -1862,7 +1909,22 @@ document.addEventListener('DOMContentLoaded', function () {
 							? `${prefijo}${cargados} grupos cargados.`
 							: `${prefijo}${cargados} grupos cargados. Lista completa.`;
 					}
+					if (recargaDuplicadosLocalesPendiente) {
+						window.setTimeout(recargarDuplicadosLocalesSiDesactualizados, 0);
+					}
 				}
+			}
+
+			async function recargarDuplicadosLocalesSiDesactualizados() {
+				const marca = leerMarcaDuplicadosLocalesDesactualizados();
+				if (!marca || marca === marcaDuplicadosLocalesVista) return;
+				if (cargandoGruposDuplicados) {
+					recargaDuplicadosLocalesPendiente = true;
+					return;
+				}
+				recargaDuplicadosLocalesPendiente = false;
+				marcaDuplicadosLocalesVista = marca;
+				await cargarGruposDuplicados({ reiniciar: true });
 			}
 
 			function pintarEstadoDuplicados(datos) {
@@ -1925,7 +1987,10 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 				if (mensajeCatalogoYandexDuplicados) {
 					const totalCatalogado = Number(yandex.catalogo_total || 0);
-					const mensaje = jobCatalogoYandex?.mensaje || `Catálogo Yandex: ${totalCatalogado} multimedia registrados.`;
+					const mensaje = mensajeCatalogoYandexConReanudacion(
+						jobCatalogoYandex,
+						`Catálogo Yandex: ${totalCatalogado} multimedia registrados.`
+					);
 					mensajeCatalogoYandexDuplicados.textContent = datos?.error || mensaje;
 				}
 				if (resultadosDuplicados && typeof datos?.html_resultados === 'string') {
@@ -2096,6 +2161,17 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 			});
 			botonCargarMasDuplicados?.addEventListener('click', () => cargarGruposDuplicados());
+			window.addEventListener('dam:duplicados-locales-desactualizados', () => {
+				recargarDuplicadosLocalesSiDesactualizados();
+			});
+			window.addEventListener('pageshow', () => {
+				recargarDuplicadosLocalesSiDesactualizados();
+			});
+			document.addEventListener('dam:sidebar-tab-activated', ev => {
+				if (ev.detail?.nombre === 'duplicados') {
+					recargarDuplicadosLocalesSiDesactualizados();
+				}
+			});
 			vistaDuplicados.addEventListener('click', ev => {
 				const botonSeleccion = ev.target.closest?.('[data-duplicado-seleccionar]');
 				if (botonSeleccion && vistaDuplicados.contains(botonSeleccion)) {
@@ -2562,6 +2638,17 @@ document.addEventListener('DOMContentLoaded', function () {
 		actualizarBarraSeleccion();
 	}
 
+	function seleccionarTodosArchivosMostrados() {
+		document.querySelectorAll('main article[data-panel-id]').forEach(articulo => {
+			if (articulo.hidden || articulo.getClientRects().length === 0) return;
+			const checkbox = articulo.querySelector('.archivo-seleccion-checkbox');
+			if (checkbox && !checkbox.disabled) {
+				checkbox.checked = true;
+			}
+		});
+		actualizarBarraSeleccion();
+	}
+
 	function crearBarraSeleccion() {
 		if (barraSeleccion) return barraSeleccion;
 
@@ -2573,6 +2660,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		barraSeleccion.innerHTML =
 			'<strong data-seleccion-total>0 archivos seleccionados</strong>' +
 			'<div class="acciones-lote-botones">' +
+				'<button type="button" data-accion-lote="seleccionar-todos">Seleccionar todos</button>' +
 				'<button type="button" data-accion-lote="mover">Mover</button>' +
 				'<button type="button" data-accion-lote="archivar">Archivar</button>' +
 				'<button type="button" data-accion-lote="borrar">Descartar</button>' +
@@ -2583,7 +2671,9 @@ document.addEventListener('DOMContentLoaded', function () {
 			const boton = ev.target.closest?.('[data-accion-lote]');
 			if (!boton || operacionLoteEnCurso) return;
 			const accion = boton.dataset.accionLote;
-			if (accion === 'mover') {
+			if (accion === 'seleccionar-todos') {
+				seleccionarTodosArchivosMostrados();
+			} else if (accion === 'mover') {
 				abrirModalMoverLote();
 			} else if (accion === 'archivar' || accion === 'borrar') {
 				operarLoteSeleccionado(accion);
@@ -2771,17 +2861,20 @@ document.addEventListener('DOMContentLoaded', function () {
 			if (!respuesta.ok || !datos) {
 				throw new Error(datos?.mensaje || `HTTP ${respuesta.status}`);
 			}
+			const rutasProcesadas = new Set(
+				(datos.resultados || [])
+					.filter(resultado => resultado.ok)
+					.map(resultado => normalizarRutaVista(resultado.origen))
+			);
+			if (rutasProcesadas.size > 0) {
+				marcarDuplicadosLocalesDesactualizados();
+			}
 			if (datos.redirect_raiz) {
 				redirigiendo = true;
 				redirigirARaizCarpetas();
 				return true;
 			}
 
-			const rutasProcesadas = new Set(
-				(datos.resultados || [])
-					.filter(resultado => resultado.ok)
-					.map(resultado => normalizarRutaVista(resultado.origen))
-			);
 			seleccion.forEach(item => {
 				if (rutasProcesadas.has(normalizarRutaVista(item.ruta))) {
 					window.DAM.removerBloqueArticulo(item.id, '');
