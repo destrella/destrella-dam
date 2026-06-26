@@ -195,24 +195,11 @@ function yandexDiskReconstruirGruposMd5Indice(array &$indice): void
 function eliminarIndiceRecursoYandexDisk(string $ruta): bool
 {
 	$ruta = normalizarRutaYandexDisk($ruta);
-	$archivo = rutaArchivoIndiceYandexDisk();
-	if (!is_file($archivo)):
+	if ($ruta === '/' || !function_exists('catalogoMarcarYandexAusente')):
 		return false;
 	endif;
 
-	$indice = json_decode((string) file_get_contents($archivo), true);
-	if (!is_array($indice) || (int) ($indice['version'] ?? 0) !== YANDEX_DISK_CACHE_VERSION):
-		return false;
-	endif;
-	if (!is_array($indice['resources'] ?? null) || !array_key_exists($ruta, $indice['resources'])):
-		return false;
-	endif;
-
-	unset($indice['resources'][$ruta]);
-	yandexDiskReconstruirGruposMd5Indice($indice);
-	$indice['updated_at'] = gmdate(DATE_ATOM);
-
-	return file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false;
+	return catalogoMarcarYandexAusente($ruta) > 0;
 }
 
 function depurarCacheRecursoYandexDisk(string $ruta): array
@@ -394,7 +381,15 @@ function yandexDiskExtraerEntradaIndice(array $item, bool $requiereHash = true):
 
 function actualizarIndiceRecursosYandexDisk(array $recursos, bool $requiereHash = true): void
 {
-	$nuevasEntradas = [];
+	if (!function_exists('conectarCatalogoMultimedia') || !function_exists('catalogoGuardarYandex')):
+		return;
+	endif;
+
+	$pdo = conectarCatalogoMultimedia();
+	if (!$pdo):
+		return;
+	endif;
+
 	foreach ($recursos as $item):
 		if (!is_array($item)):
 			continue;
@@ -403,36 +398,8 @@ function actualizarIndiceRecursosYandexDisk(array $recursos, bool $requiereHash 
 		if ($entrada === null):
 			continue;
 		endif;
-		$nuevasEntradas[$entrada['ruta']] = $entrada;
+		catalogoGuardarYandex($pdo, $entrada, time());
 	endforeach;
-
-	if (empty($nuevasEntradas) || !prepararDirectorioCacheYandexDisk()):
-		return;
-	endif;
-
-	$archivo = rutaArchivoIndiceYandexDisk();
-	$indice = [
-		'version' => YANDEX_DISK_CACHE_VERSION,
-		'updated_at' => '',
-		'resources' => [],
-		'md5_groups' => [],
-	];
-	if (is_file($archivo)):
-		$actual = json_decode((string) file_get_contents($archivo), true);
-		if (is_array($actual) && (int) ($actual['version'] ?? 0) === YANDEX_DISK_CACHE_VERSION):
-			$indice['resources'] = is_array($actual['resources'] ?? null) ? $actual['resources'] : [];
-		endif;
-	endif;
-
-	foreach ($nuevasEntradas as $ruta => $entrada):
-		$anterior = is_array($indice['resources'][$ruta] ?? null) ? $indice['resources'][$ruta] : [];
-		$indice['resources'][$ruta] = array_replace($anterior, $entrada);
-	endforeach;
-
-	yandexDiskReconstruirGruposMd5Indice($indice);
-	$indice['updated_at'] = gmdate(DATE_ATOM);
-
-	file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
 }
 
 function actualizarIndiceEntradaYandexDisk(array $entrada): bool
@@ -441,31 +408,13 @@ function actualizarIndiceEntradaYandexDisk(array $entrada): bool
 	if ($ruta === '/'):
 		return false;
 	endif;
-	if (!prepararDirectorioCacheYandexDisk()):
+	if (!function_exists('conectarCatalogoMultimedia') || !function_exists('catalogoGuardarYandex')):
 		return false;
 	endif;
 
 	$entrada['ruta'] = $ruta;
-	$archivo = rutaArchivoIndiceYandexDisk();
-	$indice = [
-		'version' => YANDEX_DISK_CACHE_VERSION,
-		'updated_at' => '',
-		'resources' => [],
-		'md5_groups' => [],
-	];
-	if (is_file($archivo)):
-		$actual = json_decode((string) file_get_contents($archivo), true);
-		if (is_array($actual) && (int) ($actual['version'] ?? 0) === YANDEX_DISK_CACHE_VERSION):
-			$indice['resources'] = is_array($actual['resources'] ?? null) ? $actual['resources'] : [];
-		endif;
-	endif;
-
-	$anterior = is_array($indice['resources'][$ruta] ?? null) ? $indice['resources'][$ruta] : [];
-	$indice['resources'][$ruta] = array_replace($anterior, $entrada);
-	yandexDiskReconstruirGruposMd5Indice($indice);
-	$indice['updated_at'] = gmdate(DATE_ATOM);
-
-	return file_put_contents($archivo, json_encode($indice, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false;
+	$pdo = conectarCatalogoMultimedia();
+	return $pdo ? catalogoGuardarYandex($pdo, $entrada, time()) : false;
 }
 
 function yandexDiskRutaVisible(string $ruta): string
@@ -1556,10 +1505,6 @@ function obtenerDirectorioYandexDiskRemotoCatalogo(array $configuracion, string 
 	endif;
 
 	$datos = is_array($respuesta['data'] ?? null) ? $respuesta['data'] : [];
-	$parametrosCache = $parametros;
-	$parametrosCache['_token_hash'] = hash('sha256', $token);
-	guardarCacheYandexDisk(claveCacheYandexDisk('resources-catalog', $parametrosCache), $datos);
-
 	$recursos = [];
 	foreach ((array) ($datos['_embedded']['items'] ?? []) as $item):
 		if (is_array($item)):
@@ -1569,8 +1514,6 @@ function obtenerDirectorioYandexDiskRemotoCatalogo(array $configuracion, string 
 	if (($datos['type'] ?? '') === 'file'):
 		$recursos = [$datos];
 	endif;
-
-	actualizarIndiceRecursosYandexDisk($recursos, false);
 
 	return [
 		'ok' => true,
