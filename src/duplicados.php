@@ -7,6 +7,7 @@ const DUPLICADOS_SCORE_MINIMO = 70;
 const DUPLICADOS_BUCKET_PROBABLE_MAX = 250;
 const DUPLICADOS_BUCKET_NOMBRE_ITEMS_MAX = 12000;
 const DUPLICADOS_CANDIDATOS_PROBABLES_MAX = 2000;
+const DUPLICADOS_CONTEO_GRUPOS_MAX = 50000;
 const DUPLICADOS_GRUPOS_POR_PAGINA = 24;
 const DUPLICADOS_YANDEX_JOB_VERSION = 1;
 const DUPLICADOS_YANDEX_RESUMEN_VERSION = 2;
@@ -177,6 +178,20 @@ function conectarBaseDuplicados(): ?PDO
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_archivos_hash_md5 ON archivos_hash(md5)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_archivos_hash_sha256 ON archivos_hash(sha256)');
 		$pdo->exec('CREATE INDEX IF NOT EXISTS idx_archivos_hash_tamano ON archivos_hash(tamano)');
+		$pdo->exec("
+			CREATE TABLE IF NOT EXISTS conteos_origen (
+				clave TEXT PRIMARY KEY,
+				base TEXT NOT NULL,
+				firma TEXT NOT NULL,
+				local INTEGER NOT NULL DEFAULT 0,
+				local_mas INTEGER NOT NULL DEFAULT 0,
+				remoto INTEGER NOT NULL DEFAULT 0,
+				remoto_mas INTEGER NOT NULL DEFAULT 0,
+				mixto INTEGER NOT NULL DEFAULT 0,
+				mixto_mas INTEGER NOT NULL DEFAULT 0,
+				actualizado INTEGER NOT NULL DEFAULT 0
+			)
+		");
 		duplicadosMigrarBase($pdo);
 	} catch (PDOException $e) {
 		trigger_error("Error al abrir indice de duplicados: [{$e->getCode()}] {$e->getMessage()}", E_USER_WARNING);
@@ -1191,6 +1206,109 @@ function duplicadosAtributosItem(array $item): string
 	return $html;
 }
 
+function duplicadosGrupoEsPixelesSinMetadatos(array $grupo): bool
+{
+	if ((int) ($grupo['score'] ?? 0) !== 95):
+		return false;
+	endif;
+
+	$razones = is_array($grupo['razones'] ?? null) ? $grupo['razones'] : [];
+	foreach ($razones as $razon):
+		$normalizada = strtr(mb_strtolower((string) $razon, 'UTF-8'), [
+			'á' => 'a',
+			'é' => 'e',
+			'í' => 'i',
+			'ó' => 'o',
+			'ú' => 'u',
+			'ü' => 'u',
+			'ñ' => 'n',
+		]);
+		$normalizada = preg_replace('/[^a-z0-9]+/', ' ', $normalizada) ?? '';
+		if (str_contains(trim((string) $normalizada), 'pixeles identicos sin metadatos')):
+			return true;
+		endif;
+	endforeach;
+
+	return false;
+}
+
+function duplicadosRutaDentroDeListas(string $ruta): bool
+{
+	$baseListas = str_replace('\\', '/', rtrim(proyectoRaiz(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'listas');
+	$ruta = str_replace('\\', '/', $ruta);
+
+	return $ruta === $baseListas || str_starts_with($ruta, $baseListas . '/');
+}
+
+function duplicadosNombreSinBeforeHighresFix(string $nombre): string
+{
+	return str_replace('-before-highres-fix', '', $nombre);
+}
+
+function duplicadosGrupoTieneParBeforeHighresFix(array $items): bool
+{
+	$nombres = [];
+	foreach ($items as $item):
+		$nombre = (string) ($item['nombre'] ?? basename((string) ($item['ruta'] ?? '')));
+		if ($nombre !== ''):
+			$nombres[$nombre] = true;
+		endif;
+	endforeach;
+
+	foreach (array_keys($nombres) as $nombre):
+		if (!str_contains($nombre, '-before-highres-fix')):
+			continue;
+		endif;
+		if (isset($nombres[duplicadosNombreSinBeforeHighresFix($nombre)])):
+			return true;
+		endif;
+	endforeach;
+
+	return false;
+}
+
+function duplicadosAccionesSugeridasGrupo(array $grupo): string
+{
+	if (!duplicadosGrupoEsPixelesSinMetadatos($grupo)):
+		return '';
+	endif;
+
+	$items = array_values(array_filter(
+		is_array($grupo['items'] ?? null) ? $grupo['items'] : [],
+		static function ($item): bool {
+			if (!is_array($item) || (string) ($item['origen'] ?? '') !== 'local'):
+				return false;
+			endif;
+			return in_array(duplicadosTipoVistaPrevia($item), ['image', 'video'], true);
+		}
+	));
+	if (count($items) < 2):
+		return '';
+	endif;
+
+	$html = '';
+	$hayListas = false;
+	$hayFueraListas = false;
+	foreach ($items as $item):
+		$enListas = duplicadosRutaDentroDeListas((string) ($item['ruta'] ?? ''));
+		$hayListas = $hayListas || $enListas;
+		$hayFueraListas = $hayFueraListas || !$enListas;
+	endforeach;
+	if ($hayListas && $hayFueraListas):
+		$html .= '<button type="button" data-duplicado-regla="mantener-listas">Mantener listas</button>';
+	endif;
+
+	if (duplicadosGrupoTieneParBeforeHighresFix($items)):
+		$html .= '<button type="button" data-duplicado-regla="descartar-before-highres">Descartar before-highres</button>';
+	endif;
+
+	$html .=
+		'<button type="button" data-duplicado-regla="mantener-mas-antiguo">Mantener más antiguo</button>' .
+		'<button type="button" data-duplicado-regla="mantener-mas-nuevo">Mantener más nuevo</button>';
+
+	return $html;
+}
+
 function duplicadosNormalizarClaveMetadato(string $clave): string
 {
 	return preg_replace('/[^a-z0-9]+/', '', mb_strtolower($clave, 'UTF-8')) ?? '';
@@ -1306,9 +1424,22 @@ function duplicadosTipoComparacionMetadato(string $clave): string
 		'filename',
 		'directory',
 		'filepath',
+		'filesize',
+		'filetype',
 		'filetypeextension',
+		'mimetype',
 		'filepermissions',
+		'fileattributes',
+		'fileowner',
+		'filegroup',
+		'fileinode',
+		'filemode',
 		'filesystemflags',
+		'exifbyteorder',
+		'exifversion',
+		'xmptoolkit',
+		'mediadataoffset',
+		'mediadatasize',
 		'resourceid',
 		'yandexresourceid',
 	];
@@ -1342,6 +1473,7 @@ function duplicadosTipoComparacionMetadato(string $clave): string
 		'digitalcreationdate',
 		'digitalcreationtime',
 		'profiledatetime',
+		'year',
 	];
 	if (in_array($clave, $volatiles, true)):
 		return 'volatil';
@@ -1431,6 +1563,240 @@ function duplicadosRenderMetadatosArchivo(array $metadatos, string $titulo, stri
 		'</section>';
 
 	return $html;
+}
+
+function duplicadosNormalizarFechaMetadato(string $valor): string
+{
+	$valor = trim($valor);
+	$valor = preg_replace('/^(\d{4}):(\d{2}):(\d{2})(.*)$/', '$1-$2-$3$4', $valor) ?? $valor;
+	$valor = str_replace('T', ' ', $valor);
+	$valor = preg_replace('/\s+/', ' ', $valor) ?? $valor;
+
+	return trim($valor);
+}
+
+function duplicadosTimestampDesdeMetadato(string $valor): ?int
+{
+	$valor = duplicadosNormalizarFechaMetadato($valor);
+	if ($valor === ''):
+		return null;
+	endif;
+	if (is_numeric($valor) && (float) $valor > 100000000):
+		return (int) round((float) $valor);
+	endif;
+
+	$timestamp = strtotime($valor);
+	return $timestamp === false ? null : $timestamp;
+}
+
+function duplicadosTimestampNacimientoArchivo(string $ruta): ?int
+{
+	if (!is_file($ruta)):
+		return null;
+	endif;
+
+	if (PHP_OS_FAMILY === 'Darwin'):
+		$salida = [];
+		$codigo = 1;
+		@exec(comandoSeguro(['stat', '-f', '%B', $ruta]) . ' 2>/dev/null', $salida, $codigo);
+		$timestamp = isset($salida[0]) ? (int) trim((string) $salida[0]) : 0;
+		if ($codigo === 0 && $timestamp > 0):
+			return $timestamp;
+		endif;
+	endif;
+
+	$ctime = @filectime($ruta);
+	if ($ctime !== false && $ctime > 0):
+		return (int) $ctime;
+	endif;
+	$mtime = @filemtime($ruta);
+	return $mtime === false ? null : (int) $mtime;
+}
+
+function duplicadosTimestampCreacionMetadatos(array $metadatos, string $ruta): ?int
+{
+	$valores = [];
+	foreach ($metadatos as $clave => $valor):
+		$normalizada = duplicadosNormalizarClaveMetadato((string) $clave);
+		if ($normalizada !== ''):
+			$valores[$normalizada] = (string) $valor;
+		endif;
+	endforeach;
+
+	$prioridades = [
+		['datetimeoriginal'],
+		['createdate'],
+		['datecreated', 'timecreated'],
+		['datecreated'],
+		['digitalcreationdate', 'digitalcreationtime'],
+		['digitalcreationdate'],
+		['creationdate'],
+		['datetimecreated'],
+		['mediacreatedate'],
+		['contentcreatedate'],
+		['filecreatedate'],
+	];
+	foreach ($prioridades as $claves):
+		$partes = [];
+		foreach ($claves as $clave):
+			if (!isset($valores[$clave]) || trim($valores[$clave]) === ''):
+				$partes = [];
+				break;
+			endif;
+			$partes[] = $valores[$clave];
+		endforeach;
+		if (empty($partes)):
+			continue;
+		endif;
+		$timestamp = duplicadosTimestampDesdeMetadato(implode(' ', $partes));
+		if ($timestamp !== null):
+			return $timestamp;
+		endif;
+	endforeach;
+
+	return duplicadosTimestampNacimientoArchivo($ruta);
+}
+
+function duplicadosMapaMetadatosNormales(array $metadatos): array
+{
+	$mapa = [];
+	foreach ($metadatos as $clave => $valor):
+		$claveNormalizada = duplicadosNormalizarClaveMetadato((string) $clave);
+		if ($claveNormalizada === '' || duplicadosTipoComparacionMetadato((string) $clave) !== 'normal'):
+			continue;
+		endif;
+		$mapa[$claveNormalizada] = duplicadosHashComparacionMetadato((string) $valor);
+	endforeach;
+	ksort($mapa, SORT_STRING);
+
+	return $mapa;
+}
+
+function duplicadosDiferenciasMetadatosNormales(array $archivos): array
+{
+	$claves = [];
+	foreach ($archivos as $archivo):
+		foreach (array_keys($archivo['normales'] ?? []) as $clave):
+			$claves[$clave] = true;
+		endforeach;
+	endforeach;
+
+	$diferencias = [];
+	foreach (array_keys($claves) as $clave):
+		$valores = [];
+		foreach ($archivos as $archivo):
+			$valores[] = (string) (($archivo['normales'] ?? [])[$clave] ?? '__ausente__');
+		endforeach;
+		if (count(array_unique($valores)) > 1):
+			$diferencias[] = $clave;
+		endif;
+	endforeach;
+	sort($diferencias, SORT_STRING);
+
+	return $diferencias;
+}
+
+function duplicadosArchivosLocalesParaReglaFecha(array $rutas, array &$ausentes = []): array
+{
+	$archivos = [];
+	$vistas = [];
+	$ausentes = [];
+	foreach ($rutas as $ruta):
+		$ruta = trim((string) $ruta);
+		if ($ruta === ''):
+			continue;
+		endif;
+		$rutaLocal = resolverRutaTolerante($ruta, 'file', false);
+		if ($rutaLocal === null):
+			$ausentes[] = $ruta;
+			continue;
+		endif;
+		if (isset($vistas[$rutaLocal])):
+			continue;
+		endif;
+		$metadatosRaw = obtenerMetadatos($rutaLocal);
+		$metadatos = is_array($metadatosRaw['resultado'] ?? null) ? $metadatosRaw['resultado'] : [];
+		$conteo = 0;
+		$aplanados = duplicadosAplanarMetadatos($metadatos, '', $conteo);
+		$archivos[] = [
+			'ruta' => $rutaLocal,
+			'nombre' => basename($rutaLocal),
+			'normales' => duplicadosMapaMetadatosNormales($aplanados),
+			'timestamp_creacion' => duplicadosTimestampCreacionMetadatos($aplanados, $rutaLocal),
+		];
+		$vistas[$rutaLocal] = true;
+	endforeach;
+
+	return $archivos;
+}
+
+function duplicadosRespuestaReglaFechaAjax(array $rutas, string $modo): array
+{
+	$modo = $modo === 'nuevo' ? 'nuevo' : 'antiguo';
+	$ausentes = [];
+	$archivos = duplicadosArchivosLocalesParaReglaFecha($rutas, $ausentes);
+	if (count($archivos) < 2):
+		return [
+			'ok' => false,
+			'error' => 'Se necesitan al menos dos archivos locales disponibles para aplicar la regla.',
+			'rutas_ausentes' => $ausentes,
+		];
+	endif;
+
+	$diferencias = duplicadosDiferenciasMetadatosNormales($archivos);
+
+	foreach ($archivos as $archivo):
+		if (($archivo['timestamp_creacion'] ?? null) === null):
+			return [
+				'ok' => false,
+				'error' => 'No se pudo determinar la fecha de creación de todos los archivos.',
+				'rutas_ausentes' => $ausentes,
+			];
+		endif;
+	endforeach;
+
+	$fechas = array_unique(array_map(static fn($archivo) => (int) $archivo['timestamp_creacion'], $archivos));
+	if (count($fechas) < 2):
+		return [
+			'ok' => false,
+			'error' => 'Las fechas de creación no tienen diferencias suficientes para elegir una versión.',
+			'rutas_ausentes' => $ausentes,
+		];
+	endif;
+
+	usort($archivos, static function (array $a, array $b) use ($modo): int {
+		$comparacion = ((int) $a['timestamp_creacion']) <=> ((int) $b['timestamp_creacion']);
+		if ($modo === 'nuevo'):
+			$comparacion *= -1;
+		endif;
+		return $comparacion !== 0 ? $comparacion : strcmp((string) $a['ruta'], (string) $b['ruta']);
+	});
+
+	$mantener = $archivos[0];
+	$descartar = array_slice($archivos, 1);
+	$advertencia = '';
+	if (!empty($diferencias)):
+		$advertencia = 'Aviso: hay metadatos relevantes diferentes: ' .
+			implode(', ', array_slice($diferencias, 0, 8)) .
+			(count($diferencias) > 8 ? '...' : '') .
+			'.';
+	endif;
+
+	return [
+		'ok' => true,
+		'modo' => $modo,
+		'seguro' => empty($diferencias),
+		'advertencia' => $advertencia,
+		'diferencias' => $diferencias,
+		'rutas_ausentes' => $ausentes,
+		'mantener' => [
+			'ruta' => $mantener['ruta'],
+			'nombre' => $mantener['nombre'],
+			'timestamp_creacion' => (int) $mantener['timestamp_creacion'],
+		],
+		'rutas_descartar' => array_values(array_map(static fn($archivo) => (string) $archivo['ruta'], $descartar)),
+		'mensaje' => 'Se mantendrá ' . $mantener['nombre'] . ' y se descartarán ' . count($descartar) . ' archivo' . (count($descartar) === 1 ? '' : 's') . '.',
+	];
 }
 
 function duplicadosBuscarYandexCachePorRuta(string $ruta): ?array
@@ -1549,16 +1915,11 @@ function duplicadosObtenerYandexCache(): array
 		return $cache;
 	endif;
 
-	$catalogo = duplicadosObtenerYandexCatalogo();
-	if (is_array($catalogo) && (int) ($catalogo['total'] ?? 0) > 0):
-		$cache = $catalogo;
-		return $cache;
-	endif;
-
+	$resumen = duplicadosYandexCatalogoResumen();
 	$cache = [
 		'items' => [],
-		'total' => 0,
-		'actualizado' => 0,
+		'total' => (int) ($resumen['total'] ?? 0),
+		'actualizado' => (int) ($resumen['actualizado'] ?? 0),
 	];
 
 	return $cache;
@@ -2248,6 +2609,119 @@ function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int 
 	return $grupos;
 }
 
+function duplicadosSqlGruposRemotosExactos(): string
+{
+	return "
+		SELECT metodo, hash, MAX(orden) AS orden
+		FROM (
+			SELECT 'SHA-256 exacto' AS metodo, sha256 AS hash, MAX(mtime) AS orden
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND sha256 <> ''
+			GROUP BY sha256
+			HAVING COUNT(*) >= 2
+			UNION ALL
+			SELECT 'MD5 exacto' AS metodo, md5 AS hash, MAX(mtime) AS orden
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND sha256 = ''
+				AND md5 <> ''
+			GROUP BY md5
+			HAVING COUNT(*) >= 2
+		)
+		GROUP BY metodo, hash
+	";
+}
+
+function duplicadosConstruirGruposRemotosExactos(int $limite, int $offset): array
+{
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return [];
+	endif;
+
+	try {
+		$stmt = $pdo->prepare(
+			duplicadosSqlGruposRemotosExactos() . "
+			ORDER BY orden DESC, hash ASC
+			LIMIT :limite OFFSET :offset
+		"
+		);
+		$stmt->bindValue(':limite', max(1, $limite), PDO::PARAM_INT);
+		$stmt->bindValue(':offset', max(0, $offset), PDO::PARAM_INT);
+		$stmt->execute();
+		$candidatos = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+	} catch (PDOException $e) {
+		return [];
+	}
+
+	$grupos = [];
+	foreach ($candidatos as $candidato):
+		$metodo = (string) ($candidato['metodo'] ?? '');
+		$hash = (string) ($candidato['hash'] ?? '');
+		if ($metodo === '' || $hash === ''):
+			continue;
+		endif;
+		$campo = $metodo === 'SHA-256 exacto' ? 'sha256' : 'md5';
+		$filtroShaVacio = $campo === 'md5' ? "AND sha256 = ''" : '';
+		$stmtItems = $pdo->prepare("
+			SELECT
+				ruta, ruta_remota, nombre, tipo, mime, tamano, mtime,
+				md5, sha256, ancho, alto, duracion, contenido_hash, perceptual_hash, url, actualizado
+			FROM medios
+			WHERE origen = 'yandex'
+				AND existente = 1
+				AND $campo = :hash
+				$filtroShaVacio
+			ORDER BY ruta_remota ASC
+		");
+		$stmtItems->execute([':hash' => $hash]);
+		$items = [];
+		foreach (($stmtItems->fetchAll(PDO::FETCH_ASSOC) ?: []) as $fila):
+			$item = duplicadosItemYandexDesdeCatalogoFila($fila);
+			if ($item !== null):
+				$items[] = $item;
+			endif;
+		endforeach;
+		if (count($items) < 2):
+			continue;
+		endif;
+		$grupos[] = duplicadosGrupoDesdeIndices(
+			$items,
+			array_keys($items),
+			100,
+			$metodo,
+			$hash,
+			[$metodo]
+		);
+	endforeach;
+
+	return $grupos;
+}
+
+function duplicadosContarGruposRemotosExactos(int $maximo = DUPLICADOS_CONTEO_GRUPOS_MAX): array
+{
+	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
+	if (!$pdo):
+		return duplicadosConteoOrigenVacio(true);
+	endif;
+
+	try {
+		$sql = 'SELECT COUNT(*) FROM (' . duplicadosSqlGruposRemotosExactos() . ')';
+		$total = (int) $pdo->query($sql)->fetchColumn();
+	} catch (PDOException $e) {
+		return duplicadosConteoOrigenVacio(true);
+	}
+
+	return [
+		'grupos' => min($maximo, $total),
+		'mas' => $total > $maximo,
+		'pendiente' => false,
+	];
+}
+
 function duplicadosOrdenarGrupos(array &$grupos): void
 {
 	usort($grupos, static function (array $a, array $b): int {
@@ -2310,18 +2784,12 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 	if ($filtroOrigen === 'mixto'):
 		return duplicadosConstruirGruposMixtosExactos($base, $limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset);
 	endif;
-	$paginaNecesaria = $limite > 0 ? $offset + $limite : PHP_INT_MAX;
-	if ($filtroOrigen === 'local' || $filtroOrigen === 'remoto'):
-		$items = $filtroOrigen === 'remoto'
-			? (duplicadosObtenerYandexCache()['items'] ?? [])
-			: duplicadosObtenerLocalesIndexados($base);
-		$filtroOrigen = 'todos';
-	else:
-		$items = array_values(array_merge(
-			duplicadosObtenerLocalesIndexados($base),
-			duplicadosObtenerYandexCache()['items']
-		));
+	if ($filtroOrigen === 'remoto'):
+		return duplicadosConstruirGruposRemotosExactos($limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset);
 	endif;
+	$paginaNecesaria = $limite > 0 ? $offset + $limite : PHP_INT_MAX;
+	$items = duplicadosObtenerLocalesIndexados($base);
+	$filtroOrigen = 'todos';
 	$total = count($items);
 	if ($total < 2):
 		return [];
@@ -2510,6 +2978,370 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 	endif;
 
 	return duplicadosGruposDesdeDescriptores($items, $descriptores);
+}
+
+function duplicadosConteoOrigenVacio(bool $pendiente = true): array
+{
+	return [
+		'grupos' => 0,
+		'mas' => false,
+		'pendiente' => $pendiente,
+	];
+}
+
+function duplicadosConteosOrigenVacios(bool $pendiente = true): array
+{
+	return [
+		'local' => duplicadosConteoOrigenVacio($pendiente),
+		'remoto' => duplicadosConteoOrigenVacio($pendiente),
+		'mixto' => duplicadosConteoOrigenVacio($pendiente),
+		'pendiente' => $pendiente,
+		'actualizado' => 0,
+	];
+}
+
+function duplicadosClaveConteosOrigen(string $base): string
+{
+	$base = duplicadosNormalizarRutaLocal($base);
+	return sha1($base === '' ? '__todos__' : $base);
+}
+
+function duplicadosFirmaConteosOrigen(string $base, array $local, array $yandexResumen): string
+{
+	return sha1(json_encode([
+		'v' => 2,
+		'base' => duplicadosNormalizarRutaLocal($base),
+		'local_indexados' => (int) ($local['indexados'] ?? 0),
+		'local_actualizado' => (int) ($local['actualizado'] ?? 0),
+		'local_stale' => (int) ($local['stale'] ?? 0),
+		'yandex_total' => (int) ($yandexResumen['total'] ?? 0),
+		'yandex_con_hash' => (int) ($yandexResumen['con_hash'] ?? 0),
+		'yandex_actualizado' => (int) ($yandexResumen['actualizado'] ?? 0),
+	], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+}
+
+function duplicadosLeerConteosOrigenCache(PDO $pdo, string $base, string $firma): ?array
+{
+	try {
+		$stmt = $pdo->prepare('SELECT * FROM conteos_origen WHERE clave = :clave LIMIT 1');
+		$stmt->execute([':clave' => duplicadosClaveConteosOrigen($base)]);
+		$fila = $stmt->fetch(PDO::FETCH_ASSOC);
+	} catch (PDOException $e) {
+		return null;
+	}
+	if (!is_array($fila)):
+		return null;
+	endif;
+
+	$pendiente = (string) ($fila['firma'] ?? '') !== $firma;
+	return [
+		'local' => [
+			'grupos' => (int) ($fila['local'] ?? 0),
+			'mas' => !empty($fila['local_mas']),
+			'pendiente' => $pendiente,
+		],
+		'remoto' => [
+			'grupos' => (int) ($fila['remoto'] ?? 0),
+			'mas' => !empty($fila['remoto_mas']),
+			'pendiente' => $pendiente,
+		],
+		'mixto' => [
+			'grupos' => (int) ($fila['mixto'] ?? 0),
+			'mas' => !empty($fila['mixto_mas']),
+			'pendiente' => $pendiente,
+		],
+		'pendiente' => $pendiente,
+		'actualizado' => (int) ($fila['actualizado'] ?? 0),
+	];
+}
+
+function duplicadosGuardarConteosOrigenCache(PDO $pdo, string $base, string $firma, array $conteos): void
+{
+	try {
+		$stmt = $pdo->prepare("
+			INSERT INTO conteos_origen (
+				clave, base, firma, local, local_mas, remoto, remoto_mas, mixto, mixto_mas, actualizado
+			) VALUES (
+				:clave, :base, :firma, :local, :local_mas, :remoto, :remoto_mas, :mixto, :mixto_mas, :actualizado
+			)
+			ON CONFLICT(clave) DO UPDATE SET
+				base = excluded.base,
+				firma = excluded.firma,
+				local = excluded.local,
+				local_mas = excluded.local_mas,
+				remoto = excluded.remoto,
+				remoto_mas = excluded.remoto_mas,
+				mixto = excluded.mixto,
+				mixto_mas = excluded.mixto_mas,
+				actualizado = excluded.actualizado
+		");
+		$stmt->execute([
+			':clave' => duplicadosClaveConteosOrigen($base),
+			':base' => duplicadosNormalizarRutaLocal($base),
+			':firma' => $firma,
+			':local' => (int) ($conteos['local']['grupos'] ?? 0),
+			':local_mas' => !empty($conteos['local']['mas']) ? 1 : 0,
+			':remoto' => (int) ($conteos['remoto']['grupos'] ?? 0),
+			':remoto_mas' => !empty($conteos['remoto']['mas']) ? 1 : 0,
+			':mixto' => (int) ($conteos['mixto']['grupos'] ?? 0),
+			':mixto_mas' => !empty($conteos['mixto']['mas']) ? 1 : 0,
+			':actualizado' => time(),
+		]);
+	} catch (PDOException $e) {
+		return;
+	}
+}
+
+function duplicadosAjustarConteosOrigenCache(?string $base, array $ajustes): array
+{
+	$pdo = conectarBaseDuplicados();
+	if (!$pdo):
+		return duplicadosConteosOrigenVacios(true);
+	endif;
+
+	$base = duplicadosNormalizarRutaLocal((string) $base);
+	try {
+		$stmt = $pdo->prepare('SELECT * FROM conteos_origen WHERE clave = :clave LIMIT 1');
+		$stmt->execute([':clave' => duplicadosClaveConteosOrigen($base)]);
+		$fila = $stmt->fetch(PDO::FETCH_ASSOC);
+	} catch (PDOException $e) {
+		return duplicadosConteosOrigenVacios(true);
+	}
+	if (!is_array($fila)):
+		return duplicadosConteosOrigen($base, false);
+	endif;
+
+	$conteos = [
+		'local' => [
+			'grupos' => (int) ($fila['local'] ?? 0),
+			'mas' => !empty($fila['local_mas']),
+			'pendiente' => false,
+		],
+		'remoto' => [
+			'grupos' => (int) ($fila['remoto'] ?? 0),
+			'mas' => !empty($fila['remoto_mas']),
+			'pendiente' => false,
+		],
+		'mixto' => [
+			'grupos' => (int) ($fila['mixto'] ?? 0),
+			'mas' => !empty($fila['mixto_mas']),
+			'pendiente' => false,
+		],
+		'pendiente' => false,
+		'actualizado' => time(),
+	];
+
+	foreach (['local', 'remoto', 'mixto'] as $origen):
+		$delta = (int) ($ajustes[$origen] ?? 0);
+		if ($delta === 0):
+			continue;
+		endif;
+		$conteos[$origen]['grupos'] = max(0, (int) ($conteos[$origen]['grupos'] ?? 0) + $delta);
+	endforeach;
+
+	$local = duplicadosResumenLocal($base);
+	$yandexResumen = duplicadosYandexCatalogoResumen();
+	$firma = duplicadosFirmaConteosOrigen($base, $local, $yandexResumen);
+	duplicadosGuardarConteosOrigenCache($pdo, $base, $firma, $conteos);
+
+	return $conteos;
+}
+
+function duplicadosConteoAgregarGrupo(int &$total, bool &$mas, int $maximo): bool
+{
+	if ($total >= $maximo):
+		$mas = true;
+		return false;
+	endif;
+	$total++;
+	return true;
+}
+
+function duplicadosContarGruposEnItems(array $items, string $filtroOrigen, int $maximo = DUPLICADOS_CONTEO_GRUPOS_MAX): array
+{
+	$totalItems = count($items);
+	if ($totalItems < 2):
+		return duplicadosConteoOrigenVacio(false);
+	endif;
+
+	$total = 0;
+	$mas = false;
+	$buckets = [];
+	$incluirBucketsNombre = $totalItems <= DUPLICADOS_BUCKET_NOMBRE_ITEMS_MAX;
+	foreach ($items as $indice => $item):
+		duplicadosBucketsItem($item, $indice, $buckets, $incluirBucketsNombre);
+	endforeach;
+
+	$exactos = [];
+	$visuales = [];
+	$primerosExactos = [];
+	$primerosVisuales = [];
+	$exactoPorIndice = [];
+	$visualPorIndice = [];
+	foreach ($items as $indice => $item):
+		$claveExacta = duplicadosClaveExactaItem($item);
+		if ($claveExacta !== ''):
+			duplicadosRegistrarClaveGrupo($claveExacta, $indice, $primerosExactos, $exactos);
+		endif;
+		$claveVisual = duplicadosClaveVisualItem($item);
+		if ($claveVisual !== ''):
+			duplicadosRegistrarClaveGrupo($claveVisual, $indice, $primerosVisuales, $visuales);
+		endif;
+	endforeach;
+	unset($primerosExactos, $primerosVisuales);
+
+	foreach ($exactos as $clave => $indices):
+		$indices = array_values(array_unique($indices));
+		if (count($indices) < 2):
+			continue;
+		endif;
+		foreach ($indices as $indice):
+			$exactoPorIndice[$indice] = $clave;
+		endforeach;
+		if (!duplicadosConteoAgregarGrupo($total, $mas, $maximo)):
+			return ['grupos' => $total, 'mas' => $mas, 'pendiente' => false];
+		endif;
+	endforeach;
+
+	foreach ($visuales as $clave => $indices):
+		$indices = array_values(array_unique($indices));
+		if (count($indices) < 2):
+			continue;
+		endif;
+		$clavesBinarias = array_values(array_unique(array_map(
+			fn($indice) => (string) ($items[$indice]['sha256'] ?? '') . '|' . (string) ($items[$indice]['md5'] ?? ''),
+			$indices
+		)));
+		if (count($clavesBinarias) < 2):
+			continue;
+		endif;
+		foreach ($indices as $indice):
+			$visualPorIndice[$indice] = $clave;
+		endforeach;
+		if (!duplicadosConteoAgregarGrupo($total, $mas, $maximo)):
+			return ['grupos' => $total, 'mas' => $mas, 'pendiente' => false];
+		endif;
+	endforeach;
+
+	$totalProbables = 0;
+	$maxProbables = max(DUPLICADOS_CANDIDATOS_PROBABLES_MAX, DUPLICADOS_CANDIDATOS_PROBABLES_MAX * 10);
+	$paresCandidatos = [];
+	foreach ($buckets as $claveBucket => $indices):
+		if (!is_array($indices)):
+			continue;
+		endif;
+		if (
+			str_starts_with($claveBucket, 'sha256:')
+			|| str_starts_with($claveBucket, 'md5:')
+			|| str_starts_with($claveBucket, 'contenido_hash:')
+		):
+			continue;
+		endif;
+		$indices = array_values(array_unique($indices));
+		$conteo = count($indices);
+		if ($conteo < 2 || $conteo > DUPLICADOS_BUCKET_PROBABLE_MAX):
+			continue;
+		endif;
+		for ($i = 0; $i < $conteo - 1; $i++):
+			for ($j = $i + 1; $j < $conteo; $j++):
+				$a = (int) $indices[$i];
+				$b = (int) $indices[$j];
+				if ($filtroOrigen === 'mixto' && (string) ($items[$a]['origen'] ?? '') === (string) ($items[$b]['origen'] ?? '')):
+					continue;
+				endif;
+				$clavePar = duplicadosClavePar($a, $b);
+				if (isset($paresCandidatos[$clavePar])):
+					continue;
+				endif;
+				if (
+					(isset($exactoPorIndice[$a], $exactoPorIndice[$b]) && $exactoPorIndice[$a] === $exactoPorIndice[$b])
+					|| (isset($visualPorIndice[$a], $visualPorIndice[$b]) && $visualPorIndice[$a] === $visualPorIndice[$b])
+				):
+					continue;
+				endif;
+
+				$comparacion = duplicadosScoreItems($items[$a], $items[$b]);
+				$score = (int) ($comparacion['score'] ?? 0);
+				if ($score < DUPLICADOS_SCORE_MINIMO || $score >= 100):
+					continue;
+				endif;
+				$totalProbables++;
+				$paresCandidatos[$clavePar] = true;
+				if ($totalProbables >= $maxProbables):
+					$total += $totalProbables;
+					if ($total > $maximo):
+						$total = $maximo;
+						$mas = true;
+					endif;
+					return ['grupos' => $total, 'mas' => $mas, 'pendiente' => false];
+				endif;
+			endfor;
+		endfor;
+	endforeach;
+
+	$total += $totalProbables;
+	if ($total > $maximo):
+		$total = $maximo;
+		$mas = true;
+	endif;
+
+	return ['grupos' => $total, 'mas' => $mas, 'pendiente' => false];
+}
+
+function duplicadosContarGruposOrigen(?string $base, string $filtroOrigen): array
+{
+	$filtroOrigen = duplicadosNormalizarFiltroOrigen($filtroOrigen);
+	if ($filtroOrigen === 'mixto'):
+		return duplicadosContarGruposMixtosExactos($base);
+	endif;
+	if ($filtroOrigen === 'remoto'):
+		return duplicadosContarGruposRemotosExactos();
+	endif;
+
+	return duplicadosContarGruposEnItems(duplicadosObtenerLocalesIndexados($base), 'local');
+}
+
+function duplicadosContarGruposMixtosExactos(?string $base): array
+{
+	$grupos = duplicadosConstruirGruposMixtosExactos($base, DUPLICADOS_CONTEO_GRUPOS_MAX + 1, 0);
+	$total = count($grupos);
+	return [
+		'grupos' => min(DUPLICADOS_CONTEO_GRUPOS_MAX, $total),
+		'mas' => $total > DUPLICADOS_CONTEO_GRUPOS_MAX,
+		'pendiente' => false,
+	];
+}
+
+function duplicadosConteosOrigen(?string $base, bool $forzar = false, ?array $local = null, ?array $yandexResumen = null): array
+{
+	$pdo = conectarBaseDuplicados();
+	if (!$pdo):
+		return duplicadosConteosOrigenVacios(true);
+	endif;
+
+	$base = duplicadosNormalizarRutaLocal((string) $base);
+	$local ??= duplicadosResumenLocal($base);
+	$yandexResumen ??= duplicadosYandexCatalogoResumen();
+	$firma = duplicadosFirmaConteosOrigen($base, $local, $yandexResumen);
+
+	if (!$forzar):
+		$cache = duplicadosLeerConteosOrigenCache($pdo, $base, $firma);
+		if ($cache !== null):
+			return $cache;
+		endif;
+		return duplicadosConteosOrigenVacios(true);
+	endif;
+
+	$conteos = [
+		'local' => duplicadosContarGruposOrigen($base, 'local'),
+		'remoto' => duplicadosContarGruposOrigen($base, 'remoto'),
+		'mixto' => duplicadosContarGruposOrigen($base, 'mixto'),
+		'pendiente' => false,
+		'actualizado' => time(),
+	];
+	duplicadosGuardarConteosOrigenCache($pdo, $base, $firma, $conteos);
+
+	return $conteos;
 }
 
 function duplicadosResumenGrupos(array $grupos): array
@@ -3406,7 +4238,7 @@ function duplicadosYandexCatalogoLanzarWorker(string $id): array
 
 	$cmd = escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($id);
 	$log = escapeshellarg(duplicadosYandexCatalogoRutaLogWorker());
-	@exec($cmd . ' > ' . $log . ' 2>&1 &');
+	@exec('nohup ' . $cmd . ' > ' . $log . ' 2>&1 < /dev/null &');
 	return ['ok' => true, 'error' => ''];
 }
 
@@ -3452,6 +4284,21 @@ function duplicadosYandexCatalogoIniciarTrabajo(bool $forzar = false): array
 {
 	$actual = duplicadosYandexCatalogoLeerTrabajoActual();
 	if (duplicadosYandexCatalogoTrabajoActivo($actual)):
+		if (
+			is_array($actual)
+			&& (string) ($actual['estado'] ?? '') === 'queued'
+			&& duplicadosYandexCatalogoLockLibre((string) ($actual['id'] ?? ''))
+		):
+			$lanzado = duplicadosYandexCatalogoLanzarWorker((string) ($actual['id'] ?? ''));
+			if (!$lanzado['ok']):
+				$actual = duplicadosYandexCatalogoActualizarTrabajo((string) ($actual['id'] ?? ''), [
+					'estado' => 'error',
+					'finished_at' => time(),
+					'mensaje' => $lanzado['error'],
+				]) ?? $actual;
+			endif;
+			return ['ok' => (bool) $lanzado['ok'], 'job' => $actual, 'error' => (string) ($lanzado['error'] ?? '')];
+		endif;
 		return ['ok' => true, 'job' => $actual, 'error' => ''];
 	endif;
 
@@ -3967,12 +4814,11 @@ function duplicadosEstado(array $fuente = [], bool $incluirGrupos = false): arra
 	$trabajoCatalogoYandex = duplicadosYandexCatalogoLeerTrabajoActual();
 	$trabajoCatalogoYandex = duplicadosYandexCatalogoAutoReanudar($trabajoCatalogoYandex);
 	$yandexResumen = duplicadosYandexResumenCache($incluirGrupos && !duplicadosYandexTrabajoActivo($trabajoYandex));
-	$yandex = $incluirGrupos
-		? duplicadosObtenerYandexCache()
-		: [
-			'total' => (int) ($yandexResumen['total'] ?? 0),
-			'actualizado' => (int) ($yandexResumen['actualizado'] ?? 0),
-		];
+	$yandex = [
+		'total' => (int) ($yandexResumen['total'] ?? 0),
+		'actualizado' => (int) ($yandexResumen['actualizado'] ?? 0),
+	];
+	$conteosOrigen = duplicadosConteosOrigen($base, false, $local, $yandexResumen);
 	$catalogoYandex = duplicadosYandexCatalogoConteo();
 	$trabajo = duplicadosTrabajoPublico($trabajo);
 	$trabajoYandex = duplicadosTrabajoPublico($trabajoYandex);
@@ -3998,6 +4844,7 @@ function duplicadosEstado(array $fuente = [], bool $incluirGrupos = false): arra
 		'local' => $local,
 		'grupos' => $grupos,
 		'resumen' => $incluirGrupos ? duplicadosResumenGrupos($grupos) : duplicadosResumenVacio(true),
+		'conteos_origen' => $conteosOrigen,
 		'job' => $trabajo,
 	];
 }
@@ -4055,6 +4902,7 @@ function duplicadosRespuestaAjax(array $estado, bool $ok = true, string $error =
 			'yandex' => $estado['yandex'],
 			'local' => $estado['local'],
 			'resumen' => $estado['resumen'],
+			'conteos_origen' => $estado['conteos_origen'] ?? duplicadosConteosOrigenVacios(true),
 			'job' => $estado['job'],
 		],
 	];
@@ -4112,6 +4960,35 @@ function duplicadosMensajeLocalFirmas(array $local, ?array $job): string
 		: 'Índice de firmas locales listo.';
 }
 
+function duplicadosTextoConteoOrigen(array $conteos, string $origen): string
+{
+	$dato = is_array($conteos[$origen] ?? null) ? $conteos[$origen] : null;
+	if ($dato === null):
+		return '...';
+	endif;
+	if (!empty($dato['pendiente'])):
+		return '...';
+	endif;
+	$texto = number_format((int) ($dato['grupos'] ?? 0), 0, '.', ',');
+	return !empty($dato['mas']) ? $texto . '+' : $texto;
+}
+
+function renderizarBotonFiltroDuplicados(string $origen, string $titulo, string $descripcion, array $conteos): string
+{
+	$conteo = duplicadosTextoConteoOrigen($conteos, $origen);
+	$title = $conteo === '...'
+		? 'Conteo de grupos pendiente'
+		: $conteo . ' grupos de duplicados';
+	return
+		'<button type="button" data-duplicados-filtro-origen="' . escaparHtml($origen) . '">' .
+			'<span class="duplicados-filtro-encabezado">' .
+				'<strong>' . escaparHtml($titulo) . '</strong>' .
+				'<span class="duplicados-filtro-conteo" data-duplicados-conteo-origen="' . escaparHtml($origen) . '" title="' . escaparHtml($title) . '">' . escaparHtml($conteo) . '</span>' .
+			'</span>' .
+			'<span class="duplicados-filtro-descripcion">' . escaparHtml($descripcion) . '</span>' .
+		'</button>';
+}
+
 function renderizarPanelDuplicados(array $estado): string
 {
 	$job = is_array($estado['job'] ?? null) ? $estado['job'] : null;
@@ -4121,6 +4998,7 @@ function renderizarPanelDuplicados(array $estado): string
 	$local = $estado['local'] ?? [];
 	$yandex = $estado['yandex'] ?? [];
 	$resumen = $estado['resumen'] ?? [];
+	$conteosOrigen = is_array($estado['conteos_origen'] ?? null) ? $estado['conteos_origen'] : duplicadosConteosOrigenVacios(true);
 	$mensajes = [];
 	$mensajes[] = 'Local: ' . duplicadosMensajeLocalFirmas($local, $job);
 	if ($jobYandex):
@@ -4145,9 +5023,9 @@ function renderizarPanelDuplicados(array $estado): string
 		'</div>' .
 		'<div class="duplicados-panel-estado' . ($activo ? ' activo' : '') . '">' . escaparHtml($mensaje) . '</div>' .
 		'<div class="duplicados-panel-filtros" data-duplicados-filtros-origen aria-label="Filtrar duplicados por origen">' .
-		'<button type="button" data-duplicados-filtro-origen="local"><strong>Duplicados locales</strong><span>Sólo archivos locales</span></button>' .
-		'<button type="button" data-duplicados-filtro-origen="remoto"><strong>Duplicados remotos</strong><span>Sólo archivos de Yandex</span></button>' .
-		'<button type="button" data-duplicados-filtro-origen="mixto"><strong>Duplicados mixtos</strong><span>Local y Yandex</span></button>' .
+		renderizarBotonFiltroDuplicados('local', 'Duplicados locales', 'Sólo archivos locales', $conteosOrigen) .
+		renderizarBotonFiltroDuplicados('remoto', 'Duplicados remotos', 'Sólo archivos de Yandex', $conteosOrigen) .
+		renderizarBotonFiltroDuplicados('mixto', 'Duplicados mixtos', 'Local y Yandex', $conteosOrigen) .
 		'</div>' .
 		'</div>';
 }
@@ -4306,6 +5184,13 @@ function renderizarGruposDuplicados(array $grupos): string
 		$accionGrupo = in_array('yandex', $origenes, true)
 			? (in_array('local', $origenes, true) ? 'Procesar selección' : 'Enviar selección a papelera')
 			: 'Descartar selección';
+		$accionesOrigenExacto = '';
+		if ($score >= 100 && $origenTipo === 'mixto' && in_array('local', $origenes, true) && in_array('yandex', $origenes, true)):
+			$accionesOrigenExacto =
+				'<button type="button" data-duplicado-descartar-origen="local">Descartar local</button>' .
+				'<button type="button" data-duplicado-descartar-origen="yandex">Descartar remoto</button>';
+		endif;
+		$accionesSugeridas = duplicadosAccionesSugeridasGrupo($grupo);
 		$html .=
 			'<details class="duplicados-grupo duplicados-grupo-' . escaparHtml($origenTipo) . ($cruzado ? ' duplicados-grupo-cruzado' : '') . '" open data-duplicados-busqueda="' . escaparHtml($busqueda) . '" data-duplicado-grupo="1" data-duplicado-grupo-tipo="' . escaparHtml($origenTipo) . '" data-duplicado-razones="' . escaparHtml(implode(' · ', $razones)) . '">' .
 				'<summary>' .
@@ -4320,6 +5205,8 @@ function renderizarGruposDuplicados(array $grupos): string
 				(!empty($razones) ? '<span>Razones: ' . escaparHtml(implode(' · ', $razones)) . '</span>' : '') .
 				'</div>' .
 				'<div class="duplicados-grupo-acciones">' .
+				$accionesOrigenExacto .
+				$accionesSugeridas .
 				'<button type="button" data-duplicado-descartar-grupo disabled>' . escaparHtml($accionGrupo) . '</button>' .
 				'<span data-duplicado-seleccion-resumen>0 seleccionados</span>' .
 				'</div>' .

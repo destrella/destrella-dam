@@ -3133,10 +3133,51 @@ button.abrir-lightbox:active {
 		line-height: 1.15;
 	}
 
+	.duplicados-filtro-encabezado {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.45rem;
+		min-width: 0;
+	}
+
+	.duplicados-panel-filtros .duplicados-filtro-conteo {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 2.1rem;
+		padding: 0.1rem 0.4rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-body));
+		color: var(--text-body);
+		font-size: 0.72rem;
+		font-weight: 700;
+		line-height: 1.2;
+		white-space: nowrap;
+	}
+
+	.duplicados-panel-filtros button.activo .duplicados-filtro-conteo {
+		background: color-mix(in srgb, var(--accent-primary) 28%, var(--bg-body));
+		color: var(--accent-primary);
+	}
+
 	.duplicados-panel-filtros span {
 		color: var(--grey-text);
 		font-size: 0.72rem;
 		line-height: 1.2;
+	}
+
+	.duplicados-panel-filtros .duplicados-filtro-encabezado {
+		color: var(--text-body);
+		font-size: inherit;
+	}
+
+	.duplicados-panel-filtros .duplicados-filtro-conteo {
+		color: var(--text-body);
+	}
+
+	.duplicados-panel-filtros button.activo .duplicados-filtro-conteo {
+		color: var(--accent-primary);
 	}
 
 	.duplicados-vista {
@@ -3376,6 +3417,16 @@ button.abrir-lightbox:active {
 
 	.duplicados-grupo-acciones button {
 		white-space: nowrap;
+	}
+
+	.duplicados-grupo-acciones button[data-duplicado-regla] {
+		background: color-mix(in srgb, var(--warning, #c98316) 16%, var(--bg-body));
+		border-color: color-mix(in srgb, var(--warning, #c98316) 45%, var(--border-color));
+	}
+
+	.duplicados-grupo-acciones button[data-duplicado-descartar-origen] {
+		background: color-mix(in srgb, #b84d42 14%, var(--bg-body));
+		border-color: color-mix(in srgb, #b84d42 48%, var(--border-color));
 	}
 
 	.duplicados-items {

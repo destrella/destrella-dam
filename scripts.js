@@ -950,6 +950,10 @@ document.addEventListener('DOMContentLoaded', function () {
 			let cargaModalMetadatosDuplicados = 0;
 			let marcaDuplicadosLocalesVista = leerMarcaDuplicadosLocalesDesactualizados();
 			let recargaDuplicadosLocalesPendiente = false;
+			let conteosOrigenDuplicadosSolicitados = false;
+			let conteosOrigenDuplicadosEnCurso = false;
+			let conteosOrigenDuplicadosActuales = null;
+			let versionConteosOrigenDuplicados = 0;
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
@@ -980,6 +984,147 @@ document.addEventListener('DOMContentLoaded', function () {
 				return etiqueta
 					? `No hay duplicados ${etiqueta} exactos ni probables con las firmas disponibles.`
 					: 'No hay duplicados exactos ni probables con las firmas disponibles.';
+			}
+
+			function formatearNumeroDuplicados(valor) {
+				const numero = Math.max(0, Number(valor) || 0);
+				try {
+					return new Intl.NumberFormat('es-MX').format(numero);
+				} catch (error) {
+					return String(numero);
+				}
+			}
+
+			function textoConteoOrigenDuplicados(conteos, origen) {
+				const dato = conteos && typeof conteos === 'object' ? conteos[origen] : null;
+				if (!dato || dato.pendiente) return '...';
+				return `${formatearNumeroDuplicados(dato.grupos)}${dato.mas ? '+' : ''}`;
+			}
+
+			function actualizarConteosOrigenDuplicados(conteos) {
+				if (!conteos || typeof conteos !== 'object') return true;
+				conteosOrigenDuplicadosActuales = {
+					local: { ...(conteos.local || {}) },
+					remoto: { ...(conteos.remoto || {}) },
+					mixto: { ...(conteos.mixto || {}) },
+					pendiente: Boolean(conteos.pendiente),
+					actualizado: Number(conteos.actualizado || 0)
+				};
+				let pendiente = Boolean(conteos.pendiente);
+				botonesFiltroOrigenDuplicados.forEach(boton => {
+					const origen = normalizarFiltroOrigenDuplicados(boton.dataset.duplicadosFiltroOrigen);
+					if (origen === 'todos') return;
+					const indicador = boton.querySelector(`[data-duplicados-conteo-origen="${origen}"]`);
+					if (!indicador) return;
+					const dato = conteos[origen] || null;
+					const texto = textoConteoOrigenDuplicados(conteos, origen);
+					indicador.textContent = texto;
+					if (dato?.pendiente) pendiente = true;
+					const titulo = texto === '...'
+						? 'Conteo de grupos pendiente'
+						: `${texto} grupos de duplicados${dato?.pendiente ? ' · actualizando' : ''}`;
+					indicador.title = titulo;
+					indicador.setAttribute('aria-label', titulo);
+				});
+				return pendiente;
+			}
+
+			function conteosOrigenDuplicadosConocidos() {
+				return conteosOrigenDuplicadosActuales
+					&& !conteosOrigenDuplicadosActuales.pendiente
+					&& ['local', 'remoto', 'mixto'].some(origen => Number.isFinite(Number(conteosOrigenDuplicadosActuales[origen]?.grupos)));
+			}
+
+			function procesarConteosOrigenDesdeEstado(conteos) {
+				if (!conteos || typeof conteos !== 'object') {
+					solicitarConteosOrigenDuplicados();
+					return;
+				}
+				if (conteos.pendiente && conteosOrigenDuplicadosConocidos()) {
+					return;
+				}
+				if (actualizarConteosOrigenDuplicados(conteos)) {
+					solicitarConteosOrigenDuplicados();
+				}
+			}
+
+			function normalizarAjustesConteosOrigenDuplicados(ajustes) {
+				const normalizados = { local: 0, remoto: 0, mixto: 0 };
+				if (!ajustes || typeof ajustes !== 'object') return normalizados;
+				Object.keys(normalizados).forEach(origen => {
+					normalizados[origen] = Math.trunc(Number(ajustes[origen] || 0));
+				});
+				return normalizados;
+			}
+
+			function hayAjustesConteosOrigenDuplicados(ajustes) {
+				return Object.values(normalizarAjustesConteosOrigenDuplicados(ajustes)).some(valor => valor !== 0);
+			}
+
+			function combinarAjustesConteosOrigenDuplicados(base, extra) {
+				const combinado = normalizarAjustesConteosOrigenDuplicados(base);
+				const adicionales = normalizarAjustesConteosOrigenDuplicados(extra);
+				Object.keys(combinado).forEach(origen => {
+					combinado[origen] += adicionales[origen];
+				});
+				return combinado;
+			}
+
+			function aplicarAjustesConteosOrigenDuplicados(ajustes) {
+				const normalizados = normalizarAjustesConteosOrigenDuplicados(ajustes);
+				if (!hayAjustesConteosOrigenDuplicados(normalizados) || !conteosOrigenDuplicadosActuales) return;
+				versionConteosOrigenDuplicados++;
+				const siguientes = {
+					local: { ...(conteosOrigenDuplicadosActuales.local || {}) },
+					remoto: { ...(conteosOrigenDuplicadosActuales.remoto || {}) },
+					mixto: { ...(conteosOrigenDuplicadosActuales.mixto || {}) },
+					pendiente: false,
+					actualizado: Date.now() / 1000
+				};
+				Object.keys(normalizados).forEach(origen => {
+					const actual = Number(siguientes[origen]?.grupos || 0);
+					siguientes[origen] = {
+						...(siguientes[origen] || {}),
+						grupos: Math.max(0, actual + normalizados[origen]),
+						pendiente: false
+					};
+				});
+				actualizarConteosOrigenDuplicados(siguientes);
+			}
+
+			async function persistirAjustesConteosOrigenDuplicados(ajustes) {
+				const normalizados = normalizarAjustesConteosOrigenDuplicados(ajustes);
+				if (!hayAjustesConteosOrigenDuplicados(normalizados)) return;
+				try {
+					const datos = await solicitarDuplicados('ajustar_conteos', { ajustes: normalizados });
+					actualizarConteosOrigenDuplicados(datos?.conteos_origen || null);
+				} catch (error) {
+					if (mensajeDuplicados) {
+						mensajeDuplicados.textContent = `No se pudieron guardar los conteos: ${error.message}`;
+					}
+				}
+			}
+
+			function solicitarConteosOrigenDuplicados() {
+				if (conteosOrigenDuplicadosSolicitados || conteosOrigenDuplicadosEnCurso) return;
+				conteosOrigenDuplicadosSolicitados = true;
+				const versionSolicitud = versionConteosOrigenDuplicados;
+				window.setTimeout(async () => {
+					conteosOrigenDuplicadosEnCurso = true;
+					try {
+						const datos = await solicitarDuplicados('conteos');
+						if (versionSolicitud === versionConteosOrigenDuplicados) {
+							actualizarConteosOrigenDuplicados(datos?.conteos_origen || null);
+						}
+					} catch (error) {
+						conteosOrigenDuplicadosSolicitados = false;
+						if (mensajeDuplicados) {
+							mensajeDuplicados.textContent = `No se pudieron calcular los conteos: ${error.message}`;
+						}
+					} finally {
+						conteosOrigenDuplicadosEnCurso = false;
+					}
+				}, 0);
 			}
 
 			function formatearCuentaRegresivaDuplicados(segundos) {
@@ -1463,7 +1608,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
 				try {
 					await ejecutarAccionDuplicado(datos);
-					eliminarItemDuplicadoDeVista(item);
+					const ajustesConteos = eliminarItemDuplicadoDeVista(item);
+					aplicarAjustesConteosOrigenDuplicados(ajustesConteos);
 					columna.classList.remove('procesando');
 					columna.classList.add('procesado');
 					if (estado) {
@@ -1473,6 +1619,7 @@ document.addEventListener('DOMContentLoaded', function () {
 					if (itemDuplicadoActivo === item) {
 						mostrarResultadoAccionDuplicado(`${datos.actionLabel}: ${datos.ruta}`);
 					}
+					await persistirAjustesConteosOrigenDuplicados(ajustesConteos);
 					try {
 						const estadoDuplicados = await solicitarDuplicados('estado');
 						pintarEstadoDuplicados(estadoDuplicados);
@@ -1609,24 +1756,67 @@ document.addEventListener('DOMContentLoaded', function () {
 				estado.textContent = mensaje;
 			}
 
+			function tipoOrigenGrupoDuplicados(grupo) {
+				const origenes = new Set(
+					Array.from(grupo?.querySelectorAll('[data-duplicado-item]') || [])
+						.map(item => item.dataset.duplicadoOrigen || '')
+						.filter(Boolean)
+				);
+				const tieneLocal = origenes.has('local');
+				const tieneYandex = origenes.has('yandex');
+				if (tieneLocal && tieneYandex) return 'mixto';
+				if (tieneYandex) return 'remoto';
+				return 'local';
+			}
+
+			function actualizarTipoGrupoDuplicados(grupo, tipo) {
+				if (!grupo || !tipo) return;
+				['local', 'remoto', 'mixto'].forEach(origen => {
+					grupo.classList.toggle(`duplicados-grupo-${origen}`, origen === tipo);
+				});
+				grupo.classList.toggle('duplicados-grupo-cruzado', tipo === 'mixto');
+				grupo.dataset.duplicadoGrupoTipo = tipo;
+			}
+
+			function ajustesConteoPorCambioGrupoDuplicados(tipoAntes, tipoDespues) {
+				const ajustes = { local: 0, remoto: 0, mixto: 0 };
+				tipoAntes = normalizarFiltroOrigenDuplicados(tipoAntes);
+				tipoDespues = normalizarFiltroOrigenDuplicados(tipoDespues);
+				if (tipoAntes !== 'todos' && tipoAntes !== tipoDespues) ajustes[tipoAntes] -= 1;
+				if (tipoDespues !== 'todos' && tipoAntes !== tipoDespues) ajustes[tipoDespues] += 1;
+				return ajustes;
+			}
+
 			function actualizarTituloGrupoDuplicados(grupo) {
 				if (!grupo) return;
 				const titulo = grupo.querySelector('.duplicados-grupo-titulo');
 				const items = grupo.querySelectorAll('[data-duplicado-item]');
 				if (!titulo) return;
-				const cruzado = titulo.textContent.includes('Local/Yandex');
+				const tipo = grupo.dataset.duplicadoGrupoTipo || tipoOrigenGrupoDuplicados(grupo);
+				const cruzado = tipo === 'mixto';
 				titulo.textContent = `${items.length} archivos${cruzado ? ' · Local/Yandex' : ''}`;
 			}
 
 			function eliminarItemDuplicadoDeVista(item) {
-				if (!item) return;
+				if (!item) return { local: 0, remoto: 0, mixto: 0 };
 				const grupo = item.closest('[data-duplicado-grupo]');
+				if (grupo && !grupo.isConnected) {
+					item.remove();
+					return { local: 0, remoto: 0, mixto: 0 };
+				}
+				const tipoAntes = grupo
+					? normalizarFiltroOrigenDuplicados(grupo.dataset.duplicadoGrupoTipo || tipoOrigenGrupoDuplicados(grupo))
+					: 'todos';
 				item.remove();
+				let tipoDespues = tipoAntes;
 				if (grupo) {
 					const restantes = grupo.querySelectorAll('[data-duplicado-item]');
 					if (restantes.length < 2) {
 						grupo.remove();
+						tipoDespues = 'todos';
 					} else {
+						tipoDespues = tipoOrigenGrupoDuplicados(grupo);
+						actualizarTipoGrupoDuplicados(grupo, tipoDespues);
 						actualizarTituloGrupoDuplicados(grupo);
 						actualizarSeleccionGrupoDuplicados(grupo);
 					}
@@ -1636,6 +1826,7 @@ document.addEventListener('DOMContentLoaded', function () {
 					mostrarMensajeListaDuplicados(mensajeVacioDuplicados());
 				}
 				actualizarCargaMasDuplicados();
+				return ajustesConteoPorCambioGrupoDuplicados(tipoAntes, tipoDespues);
 			}
 
 			function mostrarDetalleDuplicado(item) {
@@ -1708,12 +1899,34 @@ document.addEventListener('DOMContentLoaded', function () {
 				const seleccionados = grupo.querySelectorAll('[data-duplicado-item].seleccionado').length;
 				const botonGrupo = grupo.querySelector('[data-duplicado-descartar-grupo]');
 				const resumen = grupo.querySelector('[data-duplicado-seleccion-resumen]');
+				actualizarAccionesOrigenGrupoDuplicados(grupo);
 				if (botonGrupo) {
 					botonGrupo.disabled = seleccionados === 0;
 				}
 				if (resumen) {
 					resumen.textContent = seleccionados === 1 ? '1 seleccionado' : `${seleccionados} seleccionados`;
 				}
+			}
+
+			function itemsGrupoPorOrigenDuplicados(grupo, origen) {
+				const objetivo = origen === 'remoto' ? 'yandex' : origen;
+				return Array.from(grupo?.querySelectorAll('[data-duplicado-item]') || [])
+					.filter(item => (item.dataset.duplicadoOrigen || '') === objetivo);
+			}
+
+			function actualizarAccionesOrigenGrupoDuplicados(grupo) {
+				if (!grupo) return;
+				const tipo = grupo.dataset.duplicadoGrupoTipo || tipoOrigenGrupoDuplicados(grupo);
+				grupo.querySelectorAll('[data-duplicado-descartar-origen]').forEach(boton => {
+					const origen = boton.dataset.duplicadoDescartarOrigen || '';
+					const aplicable = tipo === 'mixto' && itemsGrupoPorOrigenDuplicados(grupo, origen).length > 0;
+					boton.hidden = !aplicable;
+					if (!aplicable) {
+						boton.disabled = true;
+					} else if (!boton.hasAttribute('aria-busy')) {
+						boton.disabled = false;
+					}
+				});
 			}
 
 			function alternarSeleccionDuplicado(item) {
@@ -1767,7 +1980,9 @@ document.addEventListener('DOMContentLoaded', function () {
 			}
 
 			async function refrescarDuplicadosTrasAccion(mensaje, item = itemDuplicadoActivo) {
-				eliminarItemDuplicadoDeVista(item);
+				const ajustesConteos = eliminarItemDuplicadoDeVista(item);
+				aplicarAjustesConteosOrigenDuplicados(ajustesConteos);
+				await persistirAjustesConteosOrigenDuplicados(ajustesConteos);
 				try {
 					const datos = await solicitarDuplicados('estado');
 					pintarEstadoDuplicados(datos);
@@ -1800,25 +2015,135 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 			}
 
-			async function procesarSeleccionGrupoDuplicados(grupo, boton) {
-				const items = Array.from(grupo?.querySelectorAll('[data-duplicado-item].seleccionado') || []);
-				if (!items.length) return;
-				if (!confirm(`¿Procesar ${items.length} archivo${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'}?`)) return;
+			function itemsLocalesMediaGrupoDuplicados(grupo) {
+				return Array.from(grupo?.querySelectorAll('[data-duplicado-item]') || [])
+					.filter(item => {
+						const datos = datosDuplicadoDesdeElemento(item);
+						return datos.origen === 'local' && (datos.kind === 'image' || datos.kind === 'video');
+					});
+			}
+
+			function normalizarRutaDuplicadoCliente(ruta) {
+				return String(ruta || '').replace(/\\/g, '/').replace(/\/+$/g, '');
+			}
+
+			function rutaDuplicadoEstaEnListas(datos) {
+				const base = normalizarRutaDuplicadoCliente(vistaDuplicados?.dataset?.duplicadosBase || '/Users/destrella/Sites/dam');
+				const raizListas = `${base}/listas`;
+				const ruta = normalizarRutaDuplicadoCliente(datos.ruta);
+				return ruta === raizListas || ruta.startsWith(`${raizListas}/`);
+			}
+
+			function nombreDuplicadoSinBeforeHighres(nombre) {
+				return String(nombre || '').split('-before-highres-fix').join('');
+			}
+
+			function itemsReglaMantenerListas(grupo) {
+				const items = itemsLocalesMediaGrupoDuplicados(grupo);
+				const conDatos = items.map(item => ({ item, datos: datosDuplicadoDesdeElemento(item) }));
+				if (!conDatos.some(entrada => rutaDuplicadoEstaEnListas(entrada.datos))) return [];
+				return conDatos
+					.filter(entrada => !rutaDuplicadoEstaEnListas(entrada.datos))
+					.map(entrada => entrada.item);
+			}
+
+			function itemsReglaBeforeHighres(grupo) {
+				const conDatos = itemsLocalesMediaGrupoDuplicados(grupo)
+					.map(item => ({ item, datos: datosDuplicadoDesdeElemento(item) }));
+				const nombres = new Set(conDatos.map(entrada => entrada.datos.nombre).filter(Boolean));
+				return conDatos
+					.filter(entrada => (
+						entrada.datos.nombre.includes('-before-highres-fix') &&
+						nombres.has(nombreDuplicadoSinBeforeHighres(entrada.datos.nombre))
+					))
+					.map(entrada => entrada.item);
+			}
+
+			function itemsGrupoDesdeRutasDuplicados(grupo, rutas) {
+				const rutasNormalizadas = new Set((rutas || []).map(normalizarRutaDuplicadoCliente));
+				return itemsLocalesMediaGrupoDuplicados(grupo)
+					.filter(item => rutasNormalizadas.has(normalizarRutaDuplicadoCliente(datosDuplicadoDesdeElemento(item).ruta)));
+			}
+
+			async function solicitarReglaFechaDuplicados(grupo, modo) {
+				const rutas = itemsLocalesMediaGrupoDuplicados(grupo)
+					.map(item => datosDuplicadoDesdeElemento(item).ruta)
+					.filter(Boolean);
+				const respuesta = await fetch('index.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+					body: JSON.stringify({
+						duplicados_accion: 'regla_fecha',
+						modo,
+						rutas
+					})
+				});
+				const payload = await respuesta.json().catch(() => null);
+				if (!respuesta.ok || !payload?.ok) {
+					const error = new Error(payload?.error || 'No se pudo validar la regla por fecha.');
+					error.payload = payload;
+					throw error;
+				}
+				return payload;
+			}
+
+			async function limpiarRutasAusentesGrupoDuplicados(grupo, rutas) {
+				const items = itemsGrupoDesdeRutasDuplicados(grupo, rutas || []);
+				if (!items.length) return 0;
+
+				let ajustesConteos = { local: 0, remoto: 0, mixto: 0 };
+				items.forEach(item => {
+					ajustesConteos = combinarAjustesConteosOrigenDuplicados(
+						ajustesConteos,
+						eliminarItemDuplicadoDeVista(item)
+					);
+				});
+				aplicarAjustesConteosOrigenDuplicados(ajustesConteos);
+				await persistirAjustesConteosOrigenDuplicados(ajustesConteos);
+				try {
+					const datos = await solicitarDuplicados('estado');
+					pintarEstadoDuplicados(datos);
+				} catch (err) {
+					if (mensajeDuplicados) mensajeDuplicados.textContent = `No se pudo actualizar el estado: ${err.message}`;
+				}
+
+				return items.length;
+			}
+
+			function mensajeConfirmacionItemsDuplicados(items, encabezado) {
+				const vista = items
+					.slice(0, 6)
+					.map(item => `- ${datosDuplicadoDesdeElemento(item).ruta}`)
+					.join('\n');
+				const faltantes = Math.max(0, items.length - 6);
+				return `${encabezado}\n\n${vista}${faltantes ? `\n... y ${faltantes} más` : ''}`;
+			}
+
+			async function procesarItemsDuplicados(grupo, items, boton, encabezadoConfirmacion, mensajeCarga = 'Procesando duplicados') {
+				items = Array.from(new Set(items || [])).filter(item => item?.isConnected);
+				if (!items.length) {
+					mostrarResultadoAccionDuplicado('No hay archivos aplicables para esta regla.', true);
+					return;
+				}
+				if (!confirm(mensajeConfirmacionItemsDuplicados(items, encabezadoConfirmacion))) return;
 
 				if (boton) {
 					boton.disabled = true;
 					boton.setAttribute('aria-busy', 'true');
 				}
-				mostrarCargaNavegacion('Procesando duplicados');
+				mostrarCargaNavegacion(mensajeCarga);
 
 				const errores = [];
 				let procesados = 0;
+				let huboCambios = false;
+				let ajustesConteos = { local: 0, remoto: 0, mixto: 0 };
 				for (const item of items) {
 					const datos = datosDuplicadoDesdeElemento(item);
 					item.classList.add('procesando');
 					try {
 						await ejecutarAccionDuplicado(datos);
 						procesados++;
+						huboCambios = true;
 						item.classList.add('procesado');
 					} catch (err) {
 						errores.push(`${datos.nombre || datos.ruta}: ${err.message || 'No se pudo procesar.'}`);
@@ -1830,7 +2155,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
 				items
 					.filter(item => item.classList.contains('procesado'))
-					.forEach(item => eliminarItemDuplicadoDeVista(item));
+					.forEach(item => {
+						ajustesConteos = combinarAjustesConteosOrigenDuplicados(
+							ajustesConteos,
+							eliminarItemDuplicadoDeVista(item)
+						);
+					});
+				if (huboCambios) {
+					aplicarAjustesConteosOrigenDuplicados(ajustesConteos);
+					await persistirAjustesConteosOrigenDuplicados(ajustesConteos);
+				}
 				try {
 					const datos = await solicitarDuplicados('estado');
 					pintarEstadoDuplicados(datos);
@@ -1846,7 +2180,123 @@ document.addEventListener('DOMContentLoaded', function () {
 				ocultarCargaNavegacion();
 				if (boton) {
 					boton.removeAttribute('aria-busy');
-					actualizarSeleccionGrupoDuplicados(grupo);
+					if (grupo?.isConnected) {
+						boton.disabled = false;
+						actualizarSeleccionGrupoDuplicados(grupo);
+					}
+				}
+			}
+
+			async function procesarSeleccionGrupoDuplicados(grupo, boton) {
+				const items = Array.from(grupo?.querySelectorAll('[data-duplicado-item].seleccionado') || []);
+				await procesarItemsDuplicados(
+					grupo,
+					items,
+					boton,
+					`¿Procesar ${items.length} archivo${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'}?`
+				);
+			}
+
+			async function procesarOrigenGrupoDuplicados(grupo, boton) {
+				const origen = boton?.dataset?.duplicadoDescartarOrigen || '';
+				const items = itemsGrupoPorOrigenDuplicados(grupo, origen);
+				const esRemoto = origen === 'yandex' || origen === 'remoto';
+				await procesarItemsDuplicados(
+					grupo,
+					items,
+					boton,
+					esRemoto
+						? 'Se enviarán a la papelera de Yandex.Disk los archivos remotos de este grupo exacto:'
+						: 'Se descartarán los archivos locales de este grupo exacto:',
+					esRemoto ? 'Enviando remotos a papelera' : 'Descartando locales'
+				);
+			}
+
+				async function procesarReglaGrupoDuplicados(grupo, boton) {
+					const regla = boton?.dataset?.duplicadoRegla || '';
+					if (!grupo || !regla) return;
+
+				try {
+					if (regla === 'mantener-listas') {
+						await procesarItemsDuplicados(
+							grupo,
+							itemsReglaMantenerListas(grupo),
+							boton,
+							'Se mantendrán los archivos dentro de listas y se descartarán estos archivos fuera de listas:',
+							'Aplicando regla de listas'
+						);
+						return;
+					}
+					if (regla === 'descartar-before-highres') {
+						await procesarItemsDuplicados(
+							grupo,
+							itemsReglaBeforeHighres(grupo),
+							boton,
+							'Se descartarán las versiones before-highres-fix que ya tienen una versión equivalente:',
+							'Aplicando regla before-highres'
+						);
+						return;
+					}
+					if (regla === 'mantener-mas-antiguo' || regla === 'mantener-mas-nuevo') {
+						if (boton) {
+							boton.disabled = true;
+							boton.setAttribute('aria-busy', 'true');
+						}
+						mostrarCargaNavegacion('Validando metadatos');
+						const modo = regla === 'mantener-mas-nuevo' ? 'nuevo' : 'antiguo';
+						const payload = await solicitarReglaFechaDuplicados(grupo, modo);
+						const ausentesLimpiados = await limpiarRutasAusentesGrupoDuplicados(grupo, payload.rutas_ausentes || []);
+						if (!grupo?.isConnected) {
+							mostrarResultadoAccionDuplicado(
+								ausentesLimpiados > 0
+									? 'Se limpiaron rutas ausentes y el grupo ya no tiene duplicados suficientes.'
+									: 'El grupo ya no está disponible.',
+								ausentesLimpiados === 0
+							);
+							return;
+						}
+						const items = itemsGrupoDesdeRutasDuplicados(grupo, payload.rutas_descartar || []);
+						ocultarCargaNavegacion();
+						if (boton) {
+							boton.disabled = false;
+							boton.removeAttribute('aria-busy');
+						}
+						let encabezado = payload.mensaje || `Se mantendrá el archivo más ${modo === 'nuevo' ? 'nuevo' : 'antiguo'} y se descartará el resto:`;
+						if (payload.advertencia) {
+							encabezado += `\n\n${payload.advertencia}`;
+						}
+						if (ausentesLimpiados > 0) {
+							encabezado += `\n\nSe limpiaron ${ausentesLimpiados} ruta${ausentesLimpiados === 1 ? '' : 's'} que ya no existían en disco.`;
+						}
+						await procesarItemsDuplicados(
+							grupo,
+							items,
+							boton,
+							encabezado,
+							`Manteniendo el archivo más ${modo === 'nuevo' ? 'nuevo' : 'antiguo'}`
+						);
+						return;
+					}
+				} catch (err) {
+					ocultarCargaNavegacion();
+					const ausentes = err?.payload?.rutas_ausentes || [];
+					if (ausentes.length) {
+						const limpiados = await limpiarRutasAusentesGrupoDuplicados(grupo, ausentes);
+						if (limpiados > 0) {
+							mostrarResultadoAccionDuplicado(
+								`Se limpiaron ${limpiados} ruta${limpiados === 1 ? '' : 's'} ausente${limpiados === 1 ? '' : 's'} del grupo. Vuelve a intentar si el grupo todavía tiene duplicados.`,
+								false
+							);
+						} else {
+							mostrarResultadoAccionDuplicado(err.message || 'No se pudo aplicar la regla.', true);
+						}
+					} else {
+						mostrarResultadoAccionDuplicado(err.message || 'No se pudo aplicar la regla.', true);
+					}
+					if (boton) {
+						boton.disabled = false;
+						boton.removeAttribute('aria-busy');
+					}
 				}
 			}
 
@@ -1924,6 +2374,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 				recargaDuplicadosLocalesPendiente = false;
 				marcaDuplicadosLocalesVista = marca;
+				conteosOrigenDuplicadosSolicitados = false;
 				await cargarGruposDuplicados({ reiniciar: true });
 			}
 
@@ -1954,6 +2405,7 @@ document.addEventListener('DOMContentLoaded', function () {
 					const mensaje = job?.mensaje || (resumen.pendiente ? 'Local: grupos listos para cargar por tandas.' : `Local: ${Number(resumen.grupos || 0)} grupos encontrados.`);
 					mensajeDuplicados.textContent = datos?.error || mensaje;
 				}
+				procesarConteosOrigenDesdeEstado(estado.conteos_origen || null);
 				const totalYandex = Number(jobYandex?.total || 0);
 				const procesadosYandex = Number(jobYandex?.procesados || 0);
 				if (progresoYandexDuplicados) {
@@ -2167,12 +2619,26 @@ document.addEventListener('DOMContentLoaded', function () {
 			window.addEventListener('pageshow', () => {
 				recargarDuplicadosLocalesSiDesactualizados();
 			});
-			document.addEventListener('dam:sidebar-tab-activated', ev => {
-				if (ev.detail?.nombre === 'duplicados') {
-					recargarDuplicadosLocalesSiDesactualizados();
-				}
-			});
-			vistaDuplicados.addEventListener('click', ev => {
+				document.addEventListener('dam:sidebar-tab-activated', ev => {
+					if (ev.detail?.nombre === 'duplicados') {
+						recargarDuplicadosLocalesSiDesactualizados();
+					}
+				});
+				vistaDuplicados.addEventListener('click', ev => {
+					const botonOrigen = ev.target.closest?.('[data-duplicado-descartar-origen]');
+					if (botonOrigen && vistaDuplicados.contains(botonOrigen)) {
+						ev.preventDefault();
+						procesarOrigenGrupoDuplicados(botonOrigen.closest('[data-duplicado-grupo]'), botonOrigen);
+						return;
+					}
+
+					const botonRegla = ev.target.closest?.('[data-duplicado-regla]');
+					if (botonRegla && vistaDuplicados.contains(botonRegla)) {
+						ev.preventDefault();
+						procesarReglaGrupoDuplicados(botonRegla.closest('[data-duplicado-grupo]'), botonRegla);
+						return;
+					}
+
 				const botonSeleccion = ev.target.closest?.('[data-duplicado-seleccionar]');
 				if (botonSeleccion && vistaDuplicados.contains(botonSeleccion)) {
 					ev.preventDefault();
@@ -2184,6 +2650,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				if (botonGrupo && vistaDuplicados.contains(botonGrupo)) {
 					ev.preventDefault();
 					procesarSeleccionGrupoDuplicados(botonGrupo.closest('[data-duplicado-grupo]'), botonGrupo);
+					return;
 				}
 
 				const item = ev.target.closest?.('[data-duplicado-item]');

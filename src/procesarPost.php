@@ -347,6 +347,17 @@ if (array_key_exists('duplicados_accion', $json)):
 		echo json_encode($respuestaMetadatosDuplicados, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 		exit;
 	endif;
+	if ($accionDuplicados === 'regla_fecha'):
+		$respuestaReglaFechaDuplicados = duplicadosRespuestaReglaFechaAjax(
+			is_array($json['rutas'] ?? null) ? $json['rutas'] : [],
+			(string) ($json['modo'] ?? 'antiguo')
+		);
+		if (empty($respuestaReglaFechaDuplicados['ok'])):
+			http_response_code(400);
+		endif;
+		echo json_encode($respuestaReglaFechaDuplicados, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		exit;
+	endif;
 
 	$baseDuplicados = duplicadosResolverBaseLocal($json['ruta'] ?? '');
 	$okDuplicados = true;
@@ -382,6 +393,22 @@ if (array_key_exists('duplicados_accion', $json)):
 			),
 			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
 		);
+		exit;
+	elseif ($accionDuplicados === 'conteos'):
+		set_time_limit(0);
+		echo json_encode([
+			'ok' => true,
+			'error' => '',
+			'conteos_origen' => duplicadosConteosOrigen($baseDuplicados, true),
+		], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+		exit;
+	elseif ($accionDuplicados === 'ajustar_conteos'):
+		$ajustesConteos = is_array($json['ajustes'] ?? null) ? $json['ajustes'] : [];
+		echo json_encode([
+			'ok' => true,
+			'error' => '',
+			'conteos_origen' => duplicadosAjustarConteosOrigenCache($baseDuplicados, $ajustesConteos),
+		], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 		exit;
 	elseif ($accionDuplicados !== 'estado'):
 		http_response_code(400);
