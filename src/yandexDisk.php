@@ -8,6 +8,7 @@ const YANDEX_DISK_PHOTOS_LABEL = 'Photos / Unlimited storage';
 const YANDEX_DISK_CACHE_VERSION = 1;
 const YANDEX_DISK_CACHE_TTL = 600;
 const YANDEX_DISK_LIGHTBOX_PREVIEW_SIZE = 'XXXL';
+const YANDEX_DISK_PREVIEW_CACHE_VERSION = 1;
 
 function estadoYandexDiskVacio(bool $configurada): array
 {
@@ -50,9 +51,24 @@ function rutaArchivoIndiceYandexDisk(): string
 	return rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'recursos_index.json';
 }
 
+function rutaDirectorioCacheMiniaturasYandexDisk(): string
+{
+	return dirname(__DIR__) . DIRECTORY_SEPARATOR . '.posters' . DIRECTORY_SEPARATOR . 'Yandex';
+}
+
 function prepararDirectorioCacheYandexDisk(): bool
 {
 	$directorio = rutaDirectorioCacheYandexDisk();
+	if (!is_dir($directorio) && !mkdir($directorio, 0755, true)):
+		return false;
+	endif;
+
+	return is_dir($directorio) && is_writable($directorio);
+}
+
+function prepararDirectorioCacheMiniaturasYandexDisk(?string $subdirectorio = null): bool
+{
+	$directorio = $subdirectorio ?? rutaDirectorioCacheMiniaturasYandexDisk();
 	if (!is_dir($directorio) && !mkdir($directorio, 0755, true)):
 		return false;
 	endif;
@@ -133,6 +149,119 @@ function guardarCacheYandexDisk(string $clave, array $datos): void
 	];
 
 	file_put_contents($archivo, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX);
+}
+
+function claveCacheMiniaturaYandexDisk(string $fuente): string
+{
+	return sha1(YANDEX_DISK_PREVIEW_CACHE_VERSION . '|' . $fuente);
+}
+
+function extensionCacheMiniaturaYandexDisk(string $mime): string
+{
+	$mime = mb_strtolower(trim(explode(';', $mime)[0] ?? ''), 'UTF-8');
+	return match ($mime) {
+		'image/png' => 'png',
+		'image/webp' => 'webp',
+		'image/gif' => 'gif',
+		'image/avif' => 'avif',
+		'image/bmp', 'image/x-ms-bmp' => 'bmp',
+		default => 'jpg',
+	};
+}
+
+function rutasCacheMiniaturaYandexDisk(string $clave): array
+{
+	$clave = preg_replace('/[^a-f0-9]/', '', mb_strtolower($clave, 'UTF-8')) ?: sha1($clave);
+	$directorio = rutaDirectorioCacheMiniaturasYandexDisk() . DIRECTORY_SEPARATOR . substr($clave, 0, 2);
+	return [
+		'clave' => $clave,
+		'dir' => $directorio,
+		'meta' => $directorio . DIRECTORY_SEPARATOR . $clave . '.json',
+	];
+}
+
+function leerCacheMiniaturaYandexDisk(string $clave): ?array
+{
+	$rutas = rutasCacheMiniaturaYandexDisk($clave);
+	if (!is_file($rutas['meta'])):
+		return null;
+	endif;
+
+	$meta = json_decode((string) file_get_contents($rutas['meta']), true);
+	if (!is_array($meta) || (int) ($meta['version'] ?? 0) !== YANDEX_DISK_PREVIEW_CACHE_VERSION):
+		return null;
+	endif;
+
+	$archivo = (string) ($meta['archivo'] ?? '');
+	if ($archivo === '' || basename($archivo) !== $archivo):
+		return null;
+	endif;
+
+	$rutaArchivo = $rutas['dir'] . DIRECTORY_SEPARATOR . $archivo;
+	if (!is_file($rutaArchivo)):
+		return null;
+	endif;
+
+	$cuerpo = file_get_contents($rutaArchivo);
+	if ($cuerpo === false || $cuerpo === ''):
+		return null;
+	endif;
+
+	$mime = (string) ($meta['mime'] ?? 'image/jpeg');
+	if ($mime === '' || !str_starts_with(mb_strtolower($mime, 'UTF-8'), 'image/')):
+		$mime = 'image/jpeg';
+	endif;
+
+	return [
+		'ok' => true,
+		'status' => 200,
+		'error' => '',
+		'mime' => $mime,
+		'body' => $cuerpo,
+		'cache' => [
+			'hit' => true,
+			'created_at' => (int) ($meta['created_at'] ?? 0),
+			'archivo' => $rutaArchivo,
+		],
+	];
+}
+
+function guardarCacheMiniaturaYandexDisk(string $clave, string $cuerpo, string $mime): bool
+{
+	if ($cuerpo === ''):
+		return false;
+	endif;
+
+	$rutas = rutasCacheMiniaturaYandexDisk($clave);
+	if (!prepararDirectorioCacheMiniaturasYandexDisk($rutas['dir'])):
+		return false;
+	endif;
+
+	$mime = (string) (explode(';', $mime)[0] ?? $mime);
+	if ($mime === '' || !str_starts_with(mb_strtolower($mime, 'UTF-8'), 'image/')):
+		$mime = 'image/jpeg';
+	endif;
+
+	$archivo = $rutas['clave'] . '.' . extensionCacheMiniaturaYandexDisk($mime);
+	$rutaArchivo = $rutas['dir'] . DIRECTORY_SEPARATOR . $archivo;
+	$temporal = $rutaArchivo . '.tmp.' . getmypid();
+	if (file_put_contents($temporal, $cuerpo, LOCK_EX) === false):
+		@unlink($temporal);
+		return false;
+	endif;
+	if (!@rename($temporal, $rutaArchivo)):
+		@unlink($temporal);
+		return false;
+	endif;
+
+	$meta = [
+		'version' => YANDEX_DISK_PREVIEW_CACHE_VERSION,
+		'created_at' => time(),
+		'mime' => $mime,
+		'bytes' => strlen($cuerpo),
+		'archivo' => $archivo,
+	];
+	return file_put_contents($rutas['meta'], json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), LOCK_EX) !== false;
 }
 
 function yandexDiskCacheItemCoincideRuta(array $item, string $ruta): bool

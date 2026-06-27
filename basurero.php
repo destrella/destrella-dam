@@ -193,6 +193,45 @@ if (isset($_GET['accion'])) {
         }
         exit;
     }
+
+    if ($accion === 'borrar_cache_yandex_previews') {
+        $dir = $rutaBase . DIRECTORY_SEPARATOR . '.posters' . DIRECTORY_SEPARATOR . 'Yandex';
+        if (is_dir($dir)) {
+            $archivos = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            $total = iterator_count($archivos);
+            echo "Borrando cache de miniaturas de .posters/Yandex ($total elementos)...\n";
+            flush();
+
+            $borrados = 0;
+            $archivos = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($archivos as $fileinfo) {
+                $ruta = $fileinfo->getRealPath();
+                $nombre = $fileinfo->getFilename();
+                if ($fileinfo->isDir()) {
+                    if (@rmdir($ruta)) {
+                        echo "Carpeta de cache borrada: " . $nombre . "\n";
+                    }
+                } else {
+                    if (@unlink($ruta)) {
+                        echo "Miniatura/cache borrado: " . $nombre . "\n";
+                    }
+                }
+                $borrados++;
+                flush();
+                usleep(5000);
+            }
+            echo "Limpieza completada. $borrados elementos eliminados.\n";
+        } else {
+            echo "La carpeta .posters/Yandex no existe.\n";
+        }
+        exit;
+    }
 }
 ?>
 <!DOCTYPE html>
@@ -402,6 +441,63 @@ if (isset($_GET['accion'])) {
             <?php endif; ?>
         </details>
 
+        <!-- Cache de miniaturas de Yandex -->
+        <details>
+            <summary>Miniaturas cacheadas en .posters/Yandex</summary>
+            <?php
+            $dirYandex = __DIR__ . '/.posters/Yandex';
+            $archivosYandex = [];
+            $bytesYandex = 0;
+            $miniaturasYandex = 0;
+            if (is_dir($dirYandex)) {
+                $iterador = new RecursiveIteratorIterator(
+                    new RecursiveDirectoryIterator($dirYandex, RecursiveDirectoryIterator::SKIP_DOTS)
+                );
+                foreach ($iterador as $archivo) {
+                    if ($archivo->isFile()) {
+                        $tamano = $archivo->getSize();
+                        $ext = strtolower(pathinfo($archivo->getFilename(), PATHINFO_EXTENSION));
+                        $esMeta = $ext === 'json';
+                        $bytesYandex += $tamano;
+                        if (!$esMeta) {
+                            $miniaturasYandex++;
+                        }
+                        $archivosYandex[] = [
+                            'ruta' => str_replace(__DIR__ . DIRECTORY_SEPARATOR, '', $archivo->getRealPath()),
+                            'nombre' => $archivo->getFilename(),
+                            'tamano' => $tamano,
+                            'meta' => $esMeta,
+                        ];
+                    }
+                }
+            }
+            usort($archivosYandex, static fn($a, $b) => strnatcasecmp($a['ruta'], $b['ruta']));
+            $mbYandex = $bytesYandex > 0 ? number_format($bytesYandex / 1048576, 2) . ' MB' : '0 MB';
+            ?>
+            <p>Miniaturas cacheadas: <?php echo $miniaturasYandex; ?> · archivos de cache: <?php echo count($archivosYandex); ?> · <?php echo htmlspecialchars($mbYandex); ?></p>
+            <button class="btn-accion peligro" onclick="borrarCacheYandexPreviews()">Borrar cache de miniaturas Yandex</button>
+            <div id="consola-yandex-previews" class="consola"></div>
+
+            <?php if (count($archivosYandex) > 0): ?>
+            <div class="lista-scroll">
+                <?php foreach ($archivosYandex as $archivo): ?>
+                    <div class="item-lista">
+                        <?php
+                        $ext = strtolower(pathinfo($archivo['nombre'], PATHINFO_EXTENSION));
+                        $isImg = in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'], true);
+                        if ($isImg): ?>
+                            <img src="<?php echo htmlspecialchars($archivo['ruta']); ?>" class="miniatura" loading="lazy">
+                        <?php else: ?>
+                            <div class="miniatura" style="display:flex;align-items:center;justify-content:center;font-size:0.8rem;color:#fff;"><?php echo htmlspecialchars($ext ?: 'cache'); ?></div>
+                        <?php endif; ?>
+                        <span><?php echo htmlspecialchars($archivo['meta'] ? 'Metadata' : 'Miniatura'); ?></span>
+                        <span style="font-size:0.8em;color:var(--grey-text);margin-left:auto;"><?php echo number_format($archivo['tamano'] / 1024, 1); ?> KB · <?php echo htmlspecialchars($archivo['ruta']); ?></span>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <?php endif; ?>
+        </details>
+
         <!-- Carpetas Vacías -->
         <details>
             <summary>Carpetas vacías en imgs y listas</summary>
@@ -496,6 +592,14 @@ if (isset($_GET['accion'])) {
     function borrarTemporalesExtracciones() {
         if (confirm("¿Eliminar todos los archivos temporales de .posters/extracciones?")) {
             executeStream('?accion=borrar_temporales_extracciones', 'consola-extracciones').then(() => {
+                setTimeout(() => location.reload(), 2000);
+            });
+        }
+    }
+
+    function borrarCacheYandexPreviews() {
+        if (confirm("¿Eliminar el cache de miniaturas de .posters/Yandex?")) {
+            executeStream('?accion=borrar_cache_yandex_previews', 'consola-yandex-previews').then(() => {
                 setTimeout(() => location.reload(), 2000);
             });
         }
