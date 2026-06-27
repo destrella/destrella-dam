@@ -5183,6 +5183,7 @@ function renderizarGruposDuplicados(array $grupos): string
 	$html = '';
 	foreach ($grupos as $indice => $grupo):
 		$items = is_array($grupo['items'] ?? null) ? $grupo['items'] : [];
+		$usarDescarteDirecto = count($items) === 2;
 		$tipo = (string) ($grupo['tipo'] ?? '');
 		$hash = (string) ($grupo['hash'] ?? '');
 		$score = (int) ($grupo['score'] ?? 100);
@@ -5253,7 +5254,9 @@ function renderizarGruposDuplicados(array $grupos): string
 				($meta !== '' ? '<small>' . escaparHtml($meta) . '</small>' : '') .
 				'</div>' .
 				'<div class="duplicados-item-acciones">' .
-				'<button type="button" data-duplicado-seleccionar aria-pressed="false">Seleccionar para borrar</button>' .
+				($usarDescarteDirecto
+					? '<button type="button" data-duplicado-descartar-item>Descartar</button>'
+					: '<button type="button" data-duplicado-seleccionar aria-pressed="false">Seleccionar para borrar</button>') .
 				'</div>' .
 				'</div>';
 		endforeach;

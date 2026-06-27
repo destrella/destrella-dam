@@ -2022,7 +2022,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				mostrarResultadoAccionDuplicado(mensaje);
 			}
 
-			async function procesarDuplicadoInteractivo(datos, boton) {
+			async function procesarDuplicadoInteractivo(datos, boton, item = itemDuplicadoActivo) {
 				if (!confirmarAccionDuplicado(datos)) return;
 
 				if (boton) {
@@ -2033,7 +2033,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 				try {
 					await ejecutarAccionDuplicado(datos);
-					await refrescarDuplicadosTrasAccion(`${datos.actionLabel}: ${datos.ruta}`, itemDuplicadoActivo);
+					await refrescarDuplicadosTrasAccion(`${datos.actionLabel}: ${datos.ruta}`, item);
 				} catch (err) {
 					mostrarEstadoDetalleDuplicado(err.message || 'No se pudo procesar el archivo.', true);
 					if (boton) {
@@ -2669,26 +2669,35 @@ document.addEventListener('DOMContentLoaded', function () {
 						return;
 					}
 
-				const botonSeleccion = ev.target.closest?.('[data-duplicado-seleccionar]');
-				if (botonSeleccion && vistaDuplicados.contains(botonSeleccion)) {
-					ev.preventDefault();
-					alternarSeleccionDuplicado(botonSeleccion.closest('[data-duplicado-item]'));
-					return;
-				}
+					const botonDescartarItem = ev.target.closest?.('[data-duplicado-descartar-item]');
+					if (botonDescartarItem && vistaDuplicados.contains(botonDescartarItem)) {
+						ev.preventDefault();
+						const item = botonDescartarItem.closest('[data-duplicado-item]');
+						const datos = datosDuplicadoDesdeElemento(item);
+						procesarDuplicadoInteractivo(datos, botonDescartarItem, item);
+						return;
+					}
 
-				const botonGrupo = ev.target.closest?.('[data-duplicado-descartar-grupo]');
-				if (botonGrupo && vistaDuplicados.contains(botonGrupo)) {
-					ev.preventDefault();
-					procesarSeleccionGrupoDuplicados(botonGrupo.closest('[data-duplicado-grupo]'), botonGrupo);
-					return;
-				}
+					const botonSeleccion = ev.target.closest?.('[data-duplicado-seleccionar]');
+					if (botonSeleccion && vistaDuplicados.contains(botonSeleccion)) {
+						ev.preventDefault();
+						alternarSeleccionDuplicado(botonSeleccion.closest('[data-duplicado-item]'));
+						return;
+					}
 
-				const item = ev.target.closest?.('[data-duplicado-item]');
-				if (item && vistaDuplicados.contains(item) && !ev.target.closest?.('button, a, input, select, textarea, label')) {
-					ev.preventDefault();
-					mostrarDetalleDuplicado(item);
-				}
-			});
+					const botonGrupo = ev.target.closest?.('[data-duplicado-descartar-grupo]');
+					if (botonGrupo && vistaDuplicados.contains(botonGrupo)) {
+						ev.preventDefault();
+						procesarSeleccionGrupoDuplicados(botonGrupo.closest('[data-duplicado-grupo]'), botonGrupo);
+						return;
+					}
+
+					const item = ev.target.closest?.('[data-duplicado-item]');
+					if (item && vistaDuplicados.contains(item) && !ev.target.closest?.('button, a, input, select, textarea, label')) {
+						ev.preventDefault();
+						mostrarDetalleDuplicado(item);
+					}
+				});
 			vistaDuplicados.addEventListener('keydown', ev => {
 				if (ev.key !== 'Enter' && ev.key !== ' ') return;
 				const item = ev.target.closest?.('[data-duplicado-item]');
