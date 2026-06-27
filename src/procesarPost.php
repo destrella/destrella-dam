@@ -454,9 +454,10 @@ if (array_key_exists('duplicados_accion', $json)):
 		$offsetDuplicados = max(0, (int) ($json['offset'] ?? 0));
 		$limiteDuplicados = max(1, min(100, (int) ($json['limit'] ?? DUPLICADOS_GRUPOS_POR_PAGINA)));
 		$filtroOrigenDuplicados = duplicadosNormalizarFiltroOrigen($json['filtro_origen'] ?? 'todos');
+		$ordenDuplicados = duplicadosNormalizarOrden($json['orden'] ?? 'relevancia');
 		echo json_encode(
 			duplicadosRespuestaPaginaGruposAjax(
-				duplicadosEstadoPaginaGrupos(['ruta' => rutaRelativaParaParametro($baseDuplicados)], $offsetDuplicados, $limiteDuplicados, $filtroOrigenDuplicados),
+				duplicadosEstadoPaginaGrupos(['ruta' => rutaRelativaParaParametro($baseDuplicados)], $offsetDuplicados, $limiteDuplicados, $filtroOrigenDuplicados, $ordenDuplicados),
 				$okDuplicados,
 				$errorDuplicados
 			),

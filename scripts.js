@@ -1044,6 +1044,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			const mensajeYandexDuplicados = document.getElementById('duplicados-yandex-mensaje');
 			const resultadosDuplicados = document.getElementById('duplicados-resultados');
 			const buscadorDuplicados = document.getElementById('duplicados-buscador');
+			const selectorOrdenDuplicados = document.getElementById('duplicados-orden');
 			const botonesFiltroOrigenDuplicados = Array.from(document.querySelectorAll('[data-duplicados-filtro-origen]'));
 			const cargaMasDuplicados = document.getElementById('duplicados-carga-mas');
 			const botonCargarMasDuplicados = cargaMasDuplicados?.querySelector('[data-duplicados-cargar-mas]');
@@ -1056,6 +1057,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			let cargandoGruposDuplicados = false;
 			let trabajoDuplicadosActivoAnterior = false;
 			let filtroOrigenDuplicados = 'todos';
+			let ordenDuplicados = 'relevancia';
 			let modalMetadatosDuplicados = null;
 			let cargaModalMetadatosDuplicados = 0;
 			let marcaDuplicadosLocalesVista = leerMarcaDuplicadosLocalesDesactualizados();
@@ -1065,6 +1067,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			let conteosOrigenDuplicadosActuales = null;
 			let versionConteosOrigenDuplicados = 0;
 			let conteosOrigenDuplicadosReintentoPendiente = false;
+			let conteosOrigenDuplicadosUltimaSolicitud = 0;
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
@@ -1080,6 +1083,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
 			function normalizarFiltroOrigenDuplicados(valor) {
 				return ['local', 'remoto', 'mixto'].includes(String(valor || '')) ? String(valor) : 'todos';
+			}
+
+			function normalizarOrdenDuplicados(valor) {
+				return String(valor || '') === 'tamano' ? 'tamano' : 'relevancia';
 			}
 
 			function etiquetaFiltroOrigenDuplicados() {
@@ -1108,7 +1115,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
 			function textoConteoOrigenDuplicados(conteos, origen) {
 				const dato = conteos && typeof conteos === 'object' ? conteos[origen] : null;
-				if (!dato || dato.pendiente) return '...';
+				if (!dato) return '...';
+				const tieneConteoCache = Number.isFinite(Number(dato.grupos)) && Number(conteos.actualizado || 0) > 0;
+				if (dato.pendiente && !tieneConteoCache) return '...';
 				return `${formatearNumeroDuplicados(dato.grupos)}${dato.mas ? '+' : ''}`;
 			}
 
@@ -1152,6 +1161,7 @@ document.addEventListener('DOMContentLoaded', function () {
 					return;
 				}
 				if (conteos.pendiente && conteosOrigenDuplicadosConocidos()) {
+					actualizarConteosOrigenDuplicados(conteos);
 					if (!conteosOrigenDuplicadosReintentoPendiente) {
 						conteosOrigenDuplicadosReintentoPendiente = true;
 						solicitarConteosOrigenDuplicados(true);
@@ -1224,15 +1234,27 @@ document.addEventListener('DOMContentLoaded', function () {
 			}
 
 			function solicitarConteosOrigenDuplicados(forzar = false) {
-				if (conteosOrigenDuplicadosEnCurso || (!forzar && conteosOrigenDuplicadosSolicitados)) return;
+				const ahora = Date.now();
+				const intervaloMinimo = forzar ? 15000 : 30000;
+				if (
+					conteosOrigenDuplicadosEnCurso ||
+					(!forzar && conteosOrigenDuplicadosSolicitados) ||
+					(conteosOrigenDuplicadosUltimaSolicitud > 0 && ahora - conteosOrigenDuplicadosUltimaSolicitud < intervaloMinimo)
+				) return;
 				conteosOrigenDuplicadosSolicitados = true;
+				conteosOrigenDuplicadosUltimaSolicitud = ahora;
 				const versionSolicitud = versionConteosOrigenDuplicados;
 				window.setTimeout(async () => {
 					conteosOrigenDuplicadosEnCurso = true;
 					try {
 						const datos = await solicitarDuplicados('conteos');
+						const conteos = datos?.conteos_origen || null;
 						if (versionSolicitud === versionConteosOrigenDuplicados) {
-							actualizarConteosOrigenDuplicados(datos?.conteos_origen || null);
+							actualizarConteosOrigenDuplicados(conteos);
+						}
+						if (conteos && !conteos.pendiente) {
+							conteosOrigenDuplicadosReintentoPendiente = false;
+							conteosOrigenDuplicadosSolicitados = false;
 						}
 					} catch (error) {
 						conteosOrigenDuplicadosSolicitados = false;
@@ -1706,6 +1728,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				const item = columna?._duplicadoItem;
 				const datos = columna?._duplicadoDatos || (item ? datosDuplicadoDesdeElemento(item) : null);
 				const estado = columna?.querySelector('[data-duplicado-modal-estado]');
+				const grupo = item?.closest?.('[data-duplicado-grupo]') || null;
 				if (!columna || !item?.isConnected || !datos) {
 					if (estado) estado.textContent = 'Este archivo ya no está en el grupo.';
 					actualizarColumnasMetadatosDuplicados();
@@ -1727,6 +1750,10 @@ document.addEventListener('DOMContentLoaded', function () {
 				try {
 					await ejecutarAccionDuplicado(datos);
 					const ajustesConteos = eliminarItemDuplicadoDeVista(item);
+					const restantesGrupo = grupo?.isConnected
+						? grupo.querySelectorAll('[data-duplicado-item]').length
+						: 0;
+					const grupoResuelto = !grupo?.isConnected || restantesGrupo <= 1;
 					aplicarAjustesConteosOrigenDuplicados(ajustesConteos);
 					columna.classList.remove('procesando');
 					columna.classList.add('procesado');
@@ -1734,7 +1761,10 @@ document.addEventListener('DOMContentLoaded', function () {
 						estado.className = 'ok';
 						estado.textContent = `${datos.actionLabel}: listo.`;
 					}
-					if (itemDuplicadoActivo === item) {
+					if (grupoResuelto) {
+						cerrarModalMetadatosDuplicados();
+						limpiarDetalleDuplicado();
+					} else if (itemDuplicadoActivo === item) {
 						mostrarResultadoAccionDuplicado(`${datos.actionLabel}: ${datos.ruta}`);
 					}
 					await persistirAjustesConteosOrigenDuplicados(ajustesConteos);
@@ -1865,6 +1895,25 @@ document.addEventListener('DOMContentLoaded', function () {
 					'<section class="duplicados-preview-panel duplicados-preview-resultado">' +
 					`<p class="${error ? 'respuesta_error' : 'duplicados-accion-ok'}">${escaparHtmlCliente(mensaje)}</p>` +
 					'</section>';
+			}
+
+			function limpiarDetalleDuplicado() {
+				const panel = document.getElementById('panelDetalleContenido');
+				ocultarPanelesArticulosParaDuplicados();
+				document.querySelectorAll('.duplicados-item.activo').forEach(item => item.classList.remove('activo'));
+				itemDuplicadoActivo = null;
+				if (panel) {
+					panel.replaceChildren();
+				}
+				const placeholder = document.querySelector('.panel-detalle-placeholder');
+				if (placeholder) {
+					placeholder.hidden = false;
+					placeholder.innerHTML =
+						'<div class="panel-detalle-mensaje panel-detalle-mensaje-info" role="status" aria-live="polite">' +
+							'<span class="panel-detalle-mensaje-icono" aria-hidden="true">i</span>' +
+							'<div class="panel-detalle-mensaje-cuerpo">Selecciona un archivo para ver su información</div>' +
+						'</div>';
+				}
 			}
 
 			function mostrarEstadoDetalleDuplicado(mensaje, error = false) {
@@ -2444,7 +2493,8 @@ document.addEventListener('DOMContentLoaded', function () {
 					const datos = await solicitarDuplicados('grupos', {
 						offset: offsetDuplicados,
 						limit: limitePaginaDuplicados,
-						filtro_origen: filtroOrigenDuplicados
+						filtro_origen: filtroOrigenDuplicados,
+						orden: ordenDuplicados
 					});
 					const lista = asegurarListaDuplicados();
 					const html = typeof datos?.html_grupos === 'string' ? datos.html_grupos : '';
@@ -2494,6 +2544,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				marcaDuplicadosLocalesVista = marca;
 				conteosOrigenDuplicadosSolicitados = false;
 				conteosOrigenDuplicadosReintentoPendiente = false;
+				conteosOrigenDuplicadosUltimaSolicitud = 0;
 				await cargarGruposDuplicados({ reiniciar: true });
 			}
 
@@ -2696,6 +2747,14 @@ document.addEventListener('DOMContentLoaded', function () {
 				cargarGruposDuplicados({ reiniciar: true });
 			}
 
+			function cambiarOrdenDuplicados(orden) {
+				ordenDuplicados = normalizarOrdenDuplicados(orden);
+				if (selectorOrdenDuplicados && selectorOrdenDuplicados.value !== ordenDuplicados) {
+					selectorOrdenDuplicados.value = ordenDuplicados;
+				}
+				cargarGruposDuplicados({ reiniciar: true });
+			}
+
 			botonIniciarDuplicados?.addEventListener('click', () => iniciarDuplicados(false));
 			botonRecalcularDuplicados?.addEventListener('click', () => iniciarDuplicados(true));
 			botonCatalogarYandexDuplicados?.addEventListener('click', () => iniciarCatalogoYandexDuplicados(false));
@@ -2732,6 +2791,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 			});
 			botonCargarMasDuplicados?.addEventListener('click', () => cargarGruposDuplicados());
+			selectorOrdenDuplicados?.addEventListener('change', () => cambiarOrdenDuplicados(selectorOrdenDuplicados.value));
 			window.addEventListener('dam:duplicados-locales-desactualizados', () => {
 				recargarDuplicadosLocalesSiDesactualizados();
 			});

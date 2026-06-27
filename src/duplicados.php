@@ -2134,7 +2134,7 @@ function duplicadosScoreItems(array $a, array $b): array
 		$score = min(94, $scoreVisual + min($ambosVideo ? 12 : 24, intdiv($soportePerceptual, 4)));
 		$metodo = 'Perceptual';
 	else:
-		$score = min($ambosVideo ? 64 : 84, $soporte);
+		$score = min($ambosVideo ? 64 : DUPLICADOS_SCORE_MINIMO - 1, $soporte);
 		$metodo = $ambosVideo ? 'Video heurístico' : 'Heurístico';
 		if ($ambosVideo && $soporte > 0):
 			$razones[] = 'Video sin firma visual de frames';
@@ -2251,6 +2251,34 @@ function duplicadosUnir(array &$padres, int $a, int $b): void
 	endif;
 }
 
+function duplicadosAsegurarPadre(array &$padres, int $indice): void
+{
+	if (!array_key_exists($indice, $padres)):
+		$padres[$indice] = $indice;
+	endif;
+}
+
+function duplicadosRegistrarConexionProbable(array &$padres, int $a, int $b): void
+{
+	duplicadosAsegurarPadre($padres, $a);
+	duplicadosAsegurarPadre($padres, $b);
+	duplicadosUnir($padres, $a, $b);
+}
+
+function duplicadosComponentesDesdePadres(array &$padres): array
+{
+	$componentes = [];
+	foreach (array_keys($padres) as $indice):
+		$raiz = duplicadosBuscarPadre($padres, (int) $indice);
+		if (!isset($componentes[$raiz])):
+			$componentes[$raiz] = [];
+		endif;
+		$componentes[$raiz][] = (int) $indice;
+	endforeach;
+
+	return array_values(array_filter($componentes, static fn($indices) => count($indices) >= 2));
+}
+
 function duplicadosClavePar(int $a, int $b): string
 {
 	return $a < $b ? $a . ':' . $b : $b . ':' . $a;
@@ -2280,8 +2308,9 @@ function duplicadosDescriptorDesdeIndices(array $items, array $indices, int $sco
 			$origenes[$origen] = true;
 		endif;
 	endforeach;
+	$metricasTamano = duplicadosMetricasTamanoIndices($items, $indices);
 
-	return [
+	return array_merge([
 		'indices' => $indices,
 		'score' => $score,
 		'metodo' => $metodo,
@@ -2289,40 +2318,67 @@ function duplicadosDescriptorDesdeIndices(array $items, array $indices, int $sco
 		'razones' => array_values(array_unique(array_filter($razones))),
 		'cruzado' => isset($origenes['local'], $origenes['yandex']),
 		'conteo' => count($indices),
-	];
+	], $metricasTamano);
 }
 
-function duplicadosOrdenarDescriptores(array &$descriptores): void
+function duplicadosCompararRelevancia(array $a, array $b): int
 {
-	usort($descriptores, static function (array $a, array $b): int {
-		$score = ((int) ($b['score'] ?? 0)) <=> ((int) ($a['score'] ?? 0));
-		if ($score !== 0):
-			return $score;
-		endif;
-		$cruzado = ((int) ($b['cruzado'] ?? false)) <=> ((int) ($a['cruzado'] ?? false));
-		if ($cruzado !== 0):
-			return $cruzado;
-		endif;
-		$conteo = ((int) ($b['conteo'] ?? 0)) <=> ((int) ($a['conteo'] ?? 0));
-		if ($conteo !== 0):
-			return $conteo;
-		endif;
-		return strcmp((string) ($a['hash'] ?? ''), (string) ($b['hash'] ?? ''));
-	});
+	$score = ((int) ($b['score'] ?? 0)) <=> ((int) ($a['score'] ?? 0));
+	if ($score !== 0):
+		return $score;
+	endif;
+	$cruzado = ((int) ($b['cruzado'] ?? false)) <=> ((int) ($a['cruzado'] ?? false));
+	if ($cruzado !== 0):
+		return $cruzado;
+	endif;
+	$conteo = ((int) ($b['conteo'] ?? 0)) <=> ((int) ($a['conteo'] ?? 0));
+	if ($conteo !== 0):
+		return $conteo;
+	endif;
+	return strcmp((string) ($a['hash'] ?? ''), (string) ($b['hash'] ?? ''));
 }
 
-function duplicadosAgregarProbableCandidato(array &$porScore, array $descriptor, int $maximo, int &$total): bool
+function duplicadosCompararTamano(array $a, array $b): int
+{
+	$recuperable = ((int) ($b['tamano_recuperable'] ?? 0)) <=> ((int) ($a['tamano_recuperable'] ?? 0));
+	if ($recuperable !== 0):
+		return $recuperable;
+	endif;
+	$maximo = ((int) ($b['tamano_max'] ?? 0)) <=> ((int) ($a['tamano_max'] ?? 0));
+	if ($maximo !== 0):
+		return $maximo;
+	endif;
+	$total = ((int) ($b['tamano_total'] ?? 0)) <=> ((int) ($a['tamano_total'] ?? 0));
+	if ($total !== 0):
+		return $total;
+	endif;
+	return duplicadosCompararRelevancia($a, $b);
+}
+
+function duplicadosOrdenarDescriptores(array &$descriptores, string $orden = 'relevancia'): void
+{
+	$orden = duplicadosNormalizarOrden($orden);
+	usort($descriptores, static fn(array $a, array $b): int => $orden === 'tamano'
+		? duplicadosCompararTamano($a, $b)
+		: duplicadosCompararRelevancia($a, $b));
+}
+
+function duplicadosAgregarProbableCandidato(array &$porScore, array $descriptor, int $maximo, int &$total, string $orden = 'relevancia'): bool
 {
 	if ($maximo < 1 || (int) ($descriptor['conteo'] ?? 0) < 2):
 		return false;
 	endif;
 
+	$orden = duplicadosNormalizarOrden($orden);
 	$score = max(DUPLICADOS_SCORE_MINIMO, min(99, (int) ($descriptor['score'] ?? 0)));
 	$descriptor['score'] = $score;
+	$prioridad = $orden === 'tamano'
+		? max((int) ($descriptor['tamano_recuperable'] ?? 0), (int) ($descriptor['tamano_max'] ?? 0))
+		: $score;
 	if ($total >= $maximo):
 		$puntajes = array_map('intval', array_keys($porScore));
-		$menor = empty($puntajes) ? $score : min($puntajes);
-		if ($score <= $menor):
+		$menor = empty($puntajes) ? $prioridad : min($puntajes);
+		if ($prioridad <= $menor):
 			return false;
 		endif;
 		array_shift($porScore[$menor]);
@@ -2332,15 +2388,136 @@ function duplicadosAgregarProbableCandidato(array &$porScore, array $descriptor,
 		$total--;
 	endif;
 
-	$porScore[$score][] = $descriptor;
+	$porScore[$prioridad][] = $descriptor;
 	$total++;
 	return true;
+}
+
+function duplicadosDescriptoresProbablesAgrupados(array $items, array $descriptores): array
+{
+	if (count($descriptores) < 2):
+		return $descriptores;
+	endif;
+
+	$padres = [];
+	$aristas = [];
+	foreach ($descriptores as $descriptor):
+		$indices = array_values(array_unique(array_filter(
+			array_map('intval', (array) ($descriptor['indices'] ?? [])),
+			fn($indice) => isset($items[$indice])
+		)));
+		if (count($indices) < 2):
+			continue;
+		endif;
+		$primero = (int) $indices[0];
+		duplicadosAsegurarPadre($padres, $primero);
+		for ($i = 1, $total = count($indices); $i < $total; $i++):
+			duplicadosRegistrarConexionProbable($padres, $primero, (int) $indices[$i]);
+		endfor;
+		$aristas[] = [
+			'indices' => $indices,
+			'score' => max(DUPLICADOS_SCORE_MINIMO, min(99, (int) ($descriptor['score'] ?? 0))),
+			'metodo' => (string) ($descriptor['metodo'] ?? 'Score probable'),
+			'hash' => (string) ($descriptor['hash'] ?? ''),
+			'razones' => (array) ($descriptor['razones'] ?? []),
+		];
+	endforeach;
+	if (empty($aristas)):
+		return [];
+	endif;
+
+	$componentes = [];
+	foreach (duplicadosComponentesDesdePadres($padres) as $indices):
+		sort($indices, SORT_NUMERIC);
+		$raiz = duplicadosBuscarPadre($padres, (int) $indices[0]);
+		$componentes[$raiz] = [
+			'indices' => $indices,
+			'score_min' => 99,
+			'metodos' => [],
+			'hashes' => [],
+			'razones' => [],
+		];
+	endforeach;
+
+	foreach ($aristas as $arista):
+		$raiz = duplicadosBuscarPadre($padres, (int) $arista['indices'][0]);
+		if (!isset($componentes[$raiz])):
+			continue;
+		endif;
+		$componentes[$raiz]['score_min'] = min((int) $componentes[$raiz]['score_min'], (int) $arista['score']);
+		$metodo = (string) $arista['metodo'];
+		if ($metodo !== ''):
+			$componentes[$raiz]['metodos'][$metodo] = true;
+		endif;
+		$hash = (string) $arista['hash'];
+		if ($hash !== ''):
+			$componentes[$raiz]['hashes'][$hash] = true;
+		endif;
+		foreach ($arista['razones'] as $razon):
+			$razon = trim((string) $razon);
+			if ($razon !== ''):
+				$componentes[$raiz]['razones'][$razon] = true;
+			endif;
+		endforeach;
+	endforeach;
+
+	$agrupados = [];
+	foreach ($componentes as $componente):
+		$metodos = array_keys($componente['metodos']);
+		$hashes = array_keys($componente['hashes']);
+		$agrupados[] = duplicadosDescriptorDesdeIndices(
+			$items,
+			(array) $componente['indices'],
+			max(DUPLICADOS_SCORE_MINIMO, min(99, (int) $componente['score_min'])),
+			count($metodos) === 1 ? (string) $metodos[0] : 'Score probable',
+			count($hashes) === 1 ? (string) $hashes[0] : '',
+			array_keys($componente['razones'])
+		);
+	endforeach;
+
+	return $agrupados;
 }
 
 function duplicadosNormalizarFiltroOrigen(mixed $valor): string
 {
 	$filtro = mb_strtolower(trim((string) $valor), 'UTF-8');
 	return in_array($filtro, ['local', 'remoto', 'mixto'], true) ? $filtro : 'todos';
+}
+
+function duplicadosNormalizarOrden(mixed $valor): string
+{
+	$orden = mb_strtolower(trim((string) $valor), 'UTF-8');
+	return in_array($orden, ['tamano'], true) ? $orden : 'relevancia';
+}
+
+function duplicadosMetricasTamanoItems(array $items): array
+{
+	$total = 0;
+	$maximo = 0;
+	foreach ($items as $item):
+		$tamano = max(0, (int) ($item['tamano'] ?? 0));
+		$total += $tamano;
+		$maximo = max($maximo, $tamano);
+	endforeach;
+
+	return [
+		'tamano_total' => $total,
+		'tamano_max' => $maximo,
+		'tamano_recuperable' => max(0, $total - $maximo),
+	];
+}
+
+function duplicadosMetricasTamanoIndices(array $items, array $indices): array
+{
+	$itemsGrupo = [];
+	foreach ($indices as $indice):
+		$indice = (int) $indice;
+		if (isset($items[$indice])):
+			$itemsGrupo[] = $items[$indice];
+		endif;
+	endforeach;
+
+	return duplicadosMetricasTamanoItems($itemsGrupo);
 }
 
 function duplicadosTipoOrigenGrupoDesdeItems(array $items): string
@@ -2382,6 +2559,7 @@ function duplicadosGrupoDesdeIndices(array $items, array $indices, int $score, s
 	$origenTipo = duplicadosTipoOrigenGrupoDesdeItems($itemsGrupo);
 	$md5s = array_values(array_unique(array_filter(array_map(fn($item) => (string) ($item['md5'] ?? ''), $itemsGrupo))));
 	$sha256s = array_values(array_unique(array_filter(array_map(fn($item) => (string) ($item['sha256'] ?? ''), $itemsGrupo))));
+	$metricasTamano = duplicadosMetricasTamanoItems($itemsGrupo);
 	usort($itemsGrupo, static function (array $a, array $b): int {
 		$origen = strcmp((string) ($a['origen'] ?? ''), (string) ($b['origen'] ?? ''));
 		if ($origen !== 0):
@@ -2390,7 +2568,7 @@ function duplicadosGrupoDesdeIndices(array $items, array $indices, int $score, s
 		return strnatcasecmp((string) ($a['ruta'] ?? ''), (string) ($b['ruta'] ?? ''));
 	});
 
-	return [
+	return array_merge([
 		'tipo' => $score >= 100 ? $metodo : 'Score probable',
 		'hash' => $hash,
 		'score' => $score,
@@ -2403,7 +2581,7 @@ function duplicadosGrupoDesdeIndices(array $items, array $indices, int $score, s
 		'origen_tipo' => $origenTipo,
 		'cruzado' => $origenTipo === 'mixto',
 		'conteo' => count($itemsGrupo),
-	];
+	], $metricasTamano);
 }
 
 function duplicadosGruposDesdeDescriptores(array $items, array $descriptores): array
@@ -2423,10 +2601,11 @@ function duplicadosGruposDesdeDescriptores(array $items, array $descriptores): a
 	return $grupos;
 }
 
-function duplicadosPaginaDesdeDescriptores(array $items, array $descriptores, int $limite, int $offset, string $filtroOrigen = 'todos'): array
+function duplicadosPaginaDesdeDescriptores(array $items, array $descriptores, int $limite, int $offset, string $filtroOrigen = 'todos', string $orden = 'relevancia'): array
 {
 	$filtroOrigen = duplicadosNormalizarFiltroOrigen($filtroOrigen);
-	duplicadosOrdenarDescriptores($descriptores);
+	$orden = duplicadosNormalizarOrden($orden);
+	duplicadosOrdenarDescriptores($descriptores, $orden);
 	if ($filtroOrigen !== 'todos'):
 		$grupos = [];
 		$omitidos = 0;
@@ -2495,20 +2674,24 @@ function duplicadosAdjuntarCatalogo(PDO $pdo): bool
 	}
 }
 
-function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int $offset): array
+function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int $offset, string $orden = 'relevancia'): array
 {
 	$pdo = conectarBaseDuplicados();
 	if (!$pdo || !function_exists('catalogoRutaBaseDatos') || !is_file(catalogoRutaBaseDatos()) || !duplicadosAdjuntarCatalogo($pdo)):
 		return [];
 	endif;
 
+	$orden = duplicadosNormalizarOrden($orden);
 	$base = duplicadosNormalizarRutaLocal((string) $base);
 	$prefijo = $base !== '' ? rtrim($base, '/') . '/' : '';
 	$filtroBase = $prefijo !== '' ? ' AND substr(l.ruta, 1, :prefijo_len) = :prefijo' : '';
+	$orderBy = $orden === 'tamano'
+		? 'tamano_orden DESC, orden DESC, hash ASC'
+		: 'orden DESC, hash ASC';
 	$sql = "
-		SELECT metodo, hash, MAX(orden) AS orden
+		SELECT metodo, hash, MAX(orden) AS orden, MAX(tamano_orden) AS tamano_orden
 		FROM (
-			SELECT 'SHA-256 exacto' AS metodo, l.sha256 AS hash, MAX(l.mtime) AS orden
+			SELECT 'SHA-256 exacto' AS metodo, l.sha256 AS hash, MAX(l.mtime) AS orden, MAX(max(COALESCE(l.tamano, 0), COALESCE(y.tamano, 0))) AS tamano_orden
 			FROM archivos_hash l
 			INNER JOIN catalogo.medios y ON y.sha256 = l.sha256
 			WHERE l.sha256 <> ''
@@ -2518,7 +2701,7 @@ function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int 
 				$filtroBase
 			GROUP BY l.sha256
 			UNION ALL
-			SELECT 'MD5 exacto' AS metodo, l.md5 AS hash, MAX(l.mtime) AS orden
+			SELECT 'MD5 exacto' AS metodo, l.md5 AS hash, MAX(l.mtime) AS orden, MAX(max(COALESCE(l.tamano, 0), COALESCE(y.tamano, 0))) AS tamano_orden
 			FROM archivos_hash l
 			INNER JOIN catalogo.medios y ON y.md5 = l.md5
 			WHERE l.sha256 = ''
@@ -2531,7 +2714,7 @@ function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int 
 			GROUP BY l.md5
 		)
 		GROUP BY metodo, hash
-		ORDER BY orden DESC, hash ASC
+		ORDER BY $orderBy
 		LIMIT :limite OFFSET :offset
 	";
 
@@ -2612,9 +2795,9 @@ function duplicadosConstruirGruposMixtosExactos(?string $base, int $limite, int 
 function duplicadosSqlGruposRemotosExactos(): string
 {
 	return "
-		SELECT metodo, hash, MAX(orden) AS orden
+		SELECT metodo, hash, MAX(orden) AS orden, MAX(tamano_total) AS tamano_total, MAX(tamano_max) AS tamano_max, MAX(tamano_recuperable) AS tamano_recuperable
 		FROM (
-			SELECT 'SHA-256 exacto' AS metodo, sha256 AS hash, MAX(mtime) AS orden
+			SELECT 'SHA-256 exacto' AS metodo, sha256 AS hash, MAX(mtime) AS orden, SUM(COALESCE(tamano, 0)) AS tamano_total, MAX(COALESCE(tamano, 0)) AS tamano_max, SUM(COALESCE(tamano, 0)) - MAX(COALESCE(tamano, 0)) AS tamano_recuperable
 			FROM medios
 			WHERE origen = 'yandex'
 				AND existente = 1
@@ -2622,7 +2805,7 @@ function duplicadosSqlGruposRemotosExactos(): string
 			GROUP BY sha256
 			HAVING COUNT(*) >= 2
 			UNION ALL
-			SELECT 'MD5 exacto' AS metodo, md5 AS hash, MAX(mtime) AS orden
+			SELECT 'MD5 exacto' AS metodo, md5 AS hash, MAX(mtime) AS orden, SUM(COALESCE(tamano, 0)) AS tamano_total, MAX(COALESCE(tamano, 0)) AS tamano_max, SUM(COALESCE(tamano, 0)) - MAX(COALESCE(tamano, 0)) AS tamano_recuperable
 			FROM medios
 			WHERE origen = 'yandex'
 				AND existente = 1
@@ -2635,17 +2818,21 @@ function duplicadosSqlGruposRemotosExactos(): string
 	";
 }
 
-function duplicadosConstruirGruposRemotosExactos(int $limite, int $offset): array
+function duplicadosConstruirGruposRemotosExactos(int $limite, int $offset, string $orden = 'relevancia'): array
 {
 	$pdo = function_exists('conectarCatalogoMultimedia') ? conectarCatalogoMultimedia() : null;
 	if (!$pdo):
 		return [];
 	endif;
 
+	$orden = duplicadosNormalizarOrden($orden);
+	$orderBy = $orden === 'tamano'
+		? 'tamano_recuperable DESC, tamano_max DESC, orden DESC, hash ASC'
+		: 'orden DESC, hash ASC';
 	try {
 		$stmt = $pdo->prepare(
 			duplicadosSqlGruposRemotosExactos() . "
-			ORDER BY orden DESC, hash ASC
+			ORDER BY $orderBy
 			LIMIT :limite OFFSET :offset
 		"
 		);
@@ -2722,30 +2909,20 @@ function duplicadosContarGruposRemotosExactos(int $maximo = DUPLICADOS_CONTEO_GR
 	];
 }
 
-function duplicadosOrdenarGrupos(array &$grupos): void
+function duplicadosOrdenarGrupos(array &$grupos, string $orden = 'relevancia'): void
 {
-	usort($grupos, static function (array $a, array $b): int {
-		$score = ((int) ($b['score'] ?? 0)) <=> ((int) ($a['score'] ?? 0));
-		if ($score !== 0):
-			return $score;
-		endif;
-		$cruzado = ((int) ($b['cruzado'] ?? false)) <=> ((int) ($a['cruzado'] ?? false));
-		if ($cruzado !== 0):
-			return $cruzado;
-		endif;
-		$conteo = ((int) ($b['conteo'] ?? 0)) <=> ((int) ($a['conteo'] ?? 0));
-		if ($conteo !== 0):
-			return $conteo;
-		endif;
-		return strcmp((string) ($a['hash'] ?? ''), (string) ($b['hash'] ?? ''));
-	});
+	$orden = duplicadosNormalizarOrden($orden);
+	usort($grupos, static fn(array $a, array $b): int => $orden === 'tamano'
+		? duplicadosCompararTamano($a, $b)
+		: duplicadosCompararRelevancia($a, $b));
 }
 
-function duplicadosConstruirGruposTodosPaginados(?string $base, int $limite, int $offset): array
+function duplicadosConstruirGruposTodosPaginados(?string $base, int $limite, int $offset, string $orden = 'relevancia'): array
 {
+	$orden = duplicadosNormalizarOrden($orden);
 	$limite = $limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA;
 	$necesarios = max(1, $offset + $limite);
-	$mixtos = duplicadosConstruirGrupos($base, $necesarios, 0, 'mixto');
+	$mixtos = duplicadosConstruirGrupos($base, $necesarios, 0, 'mixto', $orden);
 	$clavesMixtas = [];
 	foreach ($mixtos as $grupo):
 		$hash = (string) ($grupo['hash'] ?? '');
@@ -2756,7 +2933,7 @@ function duplicadosConstruirGruposTodosPaginados(?string $base, int $limite, int
 
 	$grupos = $mixtos;
 	foreach (['local', 'remoto'] as $filtro):
-		foreach (duplicadosConstruirGrupos($base, $necesarios, 0, $filtro) as $grupo):
+		foreach (duplicadosConstruirGrupos($base, $necesarios, 0, $filtro, $orden) as $grupo):
 			$hash = (string) ($grupo['hash'] ?? '');
 			$clave = (string) ($grupo['metodo'] ?? $grupo['tipo'] ?? '') . '|' . $hash;
 			if ($hash !== '' && (int) ($grupo['score'] ?? 0) >= 100 && isset($clavesMixtas[$clave])):
@@ -2769,23 +2946,24 @@ function duplicadosConstruirGruposTodosPaginados(?string $base, int $limite, int
 		return [];
 	endif;
 
-	duplicadosOrdenarGrupos($grupos);
+	duplicadosOrdenarGrupos($grupos, $orden);
 	return array_slice($grupos, $offset, $limite);
 }
 
-function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int $offset = 0, string $filtroOrigen = 'todos'): array
+function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int $offset = 0, string $filtroOrigen = 'todos', string $orden = 'relevancia'): array
 {
 	$limite = max(0, $limite);
 	$offset = max(0, $offset);
 	$filtroOrigen = duplicadosNormalizarFiltroOrigen($filtroOrigen);
+	$orden = duplicadosNormalizarOrden($orden);
 	if ($filtroOrigen === 'todos'):
-		return duplicadosConstruirGruposTodosPaginados($base, $limite, $offset);
+		return duplicadosConstruirGruposTodosPaginados($base, $limite, $offset, $orden);
 	endif;
 	if ($filtroOrigen === 'mixto'):
-		return duplicadosConstruirGruposMixtosExactos($base, $limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset);
+		return duplicadosConstruirGruposMixtosExactos($base, $limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset, $orden);
 	endif;
 	if ($filtroOrigen === 'remoto'):
-		return duplicadosConstruirGruposRemotosExactos($limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset);
+		return duplicadosConstruirGruposRemotosExactos($limite > 0 ? $limite : DUPLICADOS_GRUPOS_POR_PAGINA, $offset, $orden);
 	endif;
 	$paginaNecesaria = $limite > 0 ? $offset + $limite : PHP_INT_MAX;
 	$items = duplicadosObtenerLocalesIndexados($base);
@@ -2869,8 +3047,8 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 		endforeach;
 		$descriptores[] = duplicadosDescriptorDesdeIndices($items, $indices, 100, $metodo, $hash, [$metodo]);
 	endforeach;
-	if ($filtroOrigen === 'todos' && $limite > 0 && count($descriptores) >= $paginaNecesaria):
-		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset, $filtroOrigen);
+	if ($orden === 'relevancia' && $filtroOrigen === 'todos' && $limite > 0 && count($descriptores) >= $paginaNecesaria):
+		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset, $filtroOrigen, $orden);
 	endif;
 
 	foreach ($visuales as $clave => $indices):
@@ -2891,8 +3069,8 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 		endforeach;
 		$descriptores[] = duplicadosDescriptorDesdeIndices($items, $indices, 95, $metodo, $hash, ['Pixeles idénticos sin metadatos']);
 	endforeach;
-	if ($filtroOrigen === 'todos' && $limite > 0 && count($descriptores) >= $paginaNecesaria):
-		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset, $filtroOrigen);
+	if ($orden === 'relevancia' && $filtroOrigen === 'todos' && $limite > 0 && count($descriptores) >= $paginaNecesaria):
+		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset, $filtroOrigen, $orden);
 	endif;
 
 	$probablesPorScore = [];
@@ -2950,7 +3128,8 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 						(array) ($comparacion['razones'] ?? [])
 					),
 					$maxProbables,
-					$totalProbables
+					$totalProbables,
+					$orden
 				);
 				if ($agregado):
 					$paresCandidatos[$clavePar] = true;
@@ -2960,15 +3139,19 @@ function duplicadosConstruirGrupos(?string $base = null, int $limite = 200, int 
 	endforeach;
 
 	krsort($probablesPorScore, SORT_NUMERIC);
+	$probablesDescriptores = [];
 	foreach ($probablesPorScore as $candidatos):
 		foreach ($candidatos as $descriptor):
-			$descriptores[] = $descriptor;
+			$probablesDescriptores[] = $descriptor;
 		endforeach;
 	endforeach;
+	foreach (duplicadosDescriptoresProbablesAgrupados($items, $probablesDescriptores) as $descriptor):
+		$descriptores[] = $descriptor;
+	endforeach;
 
-	duplicadosOrdenarDescriptores($descriptores);
+	duplicadosOrdenarDescriptores($descriptores, $orden);
 	if ($filtroOrigen !== 'todos'):
-		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset, $filtroOrigen);
+		return duplicadosPaginaDesdeDescriptores($items, $descriptores, $limite, $offset, $filtroOrigen, $orden);
 	endif;
 
 	if ($limite > 0):
@@ -3009,7 +3192,7 @@ function duplicadosClaveConteosOrigen(string $base): string
 function duplicadosFirmaConteosOrigen(string $base, array $local, array $yandexResumen): string
 {
 	return sha1(json_encode([
-		'v' => 2,
+		'v' => 5,
 		'base' => duplicadosNormalizarRutaLocal($base),
 		'local_indexados' => (int) ($local['indexados'] ?? 0),
 		'local_actualizado' => (int) ($local['actualizado'] ?? 0),
@@ -3226,6 +3409,7 @@ function duplicadosContarGruposEnItems(array $items, string $filtroOrigen, int $
 	$totalProbables = 0;
 	$maxProbables = max(DUPLICADOS_CANDIDATOS_PROBABLES_MAX, DUPLICADOS_CANDIDATOS_PROBABLES_MAX * 10);
 	$paresCandidatos = [];
+	$padresProbables = [];
 	foreach ($buckets as $claveBucket => $indices):
 		if (!is_array($indices)):
 			continue;
@@ -3265,13 +3449,14 @@ function duplicadosContarGruposEnItems(array $items, string $filtroOrigen, int $
 				if ($score < DUPLICADOS_SCORE_MINIMO || $score >= 100):
 					continue;
 				endif;
+				duplicadosRegistrarConexionProbable($padresProbables, $a, $b);
 				$totalProbables++;
 				$paresCandidatos[$clavePar] = true;
 				if ($totalProbables >= $maxProbables):
-					$total += $totalProbables;
+					$total += count(duplicadosComponentesDesdePadres($padresProbables));
+					$mas = true;
 					if ($total > $maximo):
 						$total = $maximo;
-						$mas = true;
 					endif;
 					return ['grupos' => $total, 'mas' => $mas, 'pendiente' => false];
 				endif;
@@ -3279,7 +3464,7 @@ function duplicadosContarGruposEnItems(array $items, string $filtroOrigen, int $
 		endfor;
 	endforeach;
 
-	$total += $totalProbables;
+	$total += count(duplicadosComponentesDesdePadres($padresProbables));
 	if ($total > $maximo):
 		$total = $maximo;
 		$mas = true;
@@ -4886,13 +5071,14 @@ function duplicadosTrabajoPublico(?array $trabajo): ?array
 	return $trabajo;
 }
 
-function duplicadosEstadoPaginaGrupos(array $fuente = [], int $offset = 0, int $limite = DUPLICADOS_GRUPOS_POR_PAGINA, string $filtroOrigen = 'todos'): array
+function duplicadosEstadoPaginaGrupos(array $fuente = [], int $offset = 0, int $limite = DUPLICADOS_GRUPOS_POR_PAGINA, string $filtroOrigen = 'todos', string $orden = 'relevancia'): array
 {
 	$limite = max(1, min(100, $limite));
 	$offset = max(0, $offset);
 	$filtroOrigen = duplicadosNormalizarFiltroOrigen($filtroOrigen);
+	$orden = duplicadosNormalizarOrden($orden);
 	$estado = duplicadosEstado($fuente, false);
-	$grupos = duplicadosConstruirGrupos((string) ($estado['base'] ?? ''), $limite + 1, $offset, $filtroOrigen);
+	$grupos = duplicadosConstruirGrupos((string) ($estado['base'] ?? ''), $limite + 1, $offset, $filtroOrigen, $orden);
 	$hayMas = count($grupos) > $limite;
 	if ($hayMas):
 		$grupos = array_slice($grupos, 0, $limite);
@@ -4910,6 +5096,7 @@ function duplicadosEstadoPaginaGrupos(array $fuente = [], int $offset = 0, int $
 			'next_offset' => $offset + $conteo,
 			'hay_mas' => $hayMas,
 			'filtro_origen' => $filtroOrigen,
+			'orden' => $orden,
 		],
 	];
 }
@@ -4951,6 +5138,7 @@ function duplicadosRespuestaPaginaGruposAjax(array $pagina, bool $ok = true, str
 				'next_offset' => 0,
 				'hay_mas' => false,
 				'filtro_origen' => 'todos',
+				'orden' => 'relevancia',
 			],
 		]
 	);
@@ -4989,7 +5177,7 @@ function duplicadosTextoConteoOrigen(array $conteos, string $origen): string
 	if ($dato === null):
 		return '...';
 	endif;
-	if (!empty($dato['pendiente'])):
+	if (!empty($dato['pendiente']) && (int) ($conteos['actualizado'] ?? 0) <= 0):
 		return '...';
 	endif;
 	$texto = number_format((int) ($dato['grupos'] ?? 0), 0, '.', ',');
@@ -4999,9 +5187,10 @@ function duplicadosTextoConteoOrigen(array $conteos, string $origen): string
 function renderizarBotonFiltroDuplicados(string $origen, string $titulo, string $descripcion, array $conteos): string
 {
 	$conteo = duplicadosTextoConteoOrigen($conteos, $origen);
+	$pendiente = !empty($conteos[$origen]['pendiente']);
 	$title = $conteo === '...'
 		? 'Conteo de grupos pendiente'
-		: $conteo . ' grupos de duplicados';
+		: $conteo . ' grupos de duplicados' . ($pendiente ? ' · actualizando' : '');
 	return
 		'<button type="button" data-duplicados-filtro-origen="' . escaparHtml($origen) . '">' .
 			'<span class="duplicados-filtro-encabezado">' .
@@ -5051,7 +5240,8 @@ function renderizarPanelDuplicados(array $estado): string
 		renderizarBotonFiltroDuplicados('remoto', 'Duplicados remotos', 'Sólo archivos de Yandex', $conteosOrigen) .
 		renderizarBotonFiltroDuplicados('mixto', 'Duplicados mixtos', 'Local y Yandex', $conteosOrigen) .
 		'</div>' .
-		'</div>';
+		'</div>' .
+		renderizarResumenExtendidoDuplicados($estado);
 }
 
 function renderizarFormularioRutaDuplicados(array $estado): string
@@ -5066,6 +5256,11 @@ function renderizarFormularioRutaDuplicados(array $estado): string
 }
 
 function renderizarControlesDuplicados(array $estado): string
+{
+	return '';
+}
+
+function renderizarResumenExtendidoDuplicados(array $estado): string
 {
 	$resumen = $estado['resumen'] ?? [];
 	$local = $estado['local'] ?? [];
@@ -5102,8 +5297,8 @@ function renderizarControlesDuplicados(array $estado): string
 	endif;
 
 	return
-		'<div class="filtros-metadatos duplicados-controles">' .
-		'<span class="filtros-metadatos-resumen">' . escaparHtml(implode(' · ', $partes)) . '</span>' .
+		'<div class="duplicados-panel-resumen-extendido" aria-label="Resumen de duplicados">' .
+		escaparHtml(implode(' · ', $partes)) .
 		'</div>';
 }
 
@@ -5161,8 +5356,13 @@ function renderizarVistaDuplicados(array $estado): string
 		'<span id="duplicados-yandex-catalogo-mensaje">' . escaparHtml($mensajeCatalogoYandex) . '</span>' .
 		'</div>' .
 		'</div>' .
-		'<label class="duplicados-buscador-label" for="duplicados-buscador">Filtrar resultados</label>' .
-		'<input type="search" id="duplicados-buscador" class="duplicados-buscador" placeholder="Nombre, ruta, hash o score" autocomplete="off">' .
+		'<div class="duplicados-fila-controles">' .
+		'<label class="duplicados-buscador-label" for="duplicados-buscador">Filtrar resultados<input type="search" id="duplicados-buscador" class="duplicados-buscador" placeholder="Nombre, ruta, hash o score" autocomplete="off"></label>' .
+		'<label class="duplicados-orden-label" for="duplicados-orden">Ordenar<select id="duplicados-orden">' .
+			'<option value="relevancia">Relevancia</option>' .
+			'<option value="tamano">Tamaño recuperable</option>' .
+		'</select></label>' .
+		'</div>' .
 		'<div id="duplicados-resultados" data-duplicados-page-size="' . DUPLICADOS_GRUPOS_POR_PAGINA . '">' .
 			'<div class="duplicados-lista" data-duplicados-lista></div>' .
 			'<div class="duplicados-vacio" role="status">Cargando grupos de duplicados...</div>' .
@@ -5203,10 +5403,16 @@ function renderizarGruposDuplicados(array $grupos): string
 		$razones = is_array($grupo['razones'] ?? null) ? array_slice($grupo['razones'], 0, 6) : [];
 		$etiquetaScore = $score >= 100 ? 'Exacto' : 'Probable';
 		$textoHash = $hash !== '' ? $tipo . ' ' . duplicadosHashCorto($hash, 24) : (string) ($grupo['metodo'] ?? $tipo);
+		$tamanoRecuperable = (int) ($grupo['tamano_recuperable'] ?? 0);
+		$tamanoMax = (int) ($grupo['tamano_max'] ?? 0);
+		$textoTamanoGrupo = $tamanoRecuperable > 0
+			? 'Recuperable aprox.: ' . yandexDiskFormatoTamano($tamanoRecuperable)
+			: ($tamanoMax > 0 ? 'Mayor archivo: ' . yandexDiskFormatoTamano($tamanoMax) : '');
 		$busqueda = implode(' ', [
 			$hash,
 			'score ' . $score,
 			$etiquetaScore,
+			$textoTamanoGrupo,
 			implode(' ', $razones),
 			implode(' ', array_map(fn($item) => (string) ($item['ruta'] ?? '') . ' ' . (string) ($item['nombre'] ?? ''), $items)),
 		]);
@@ -5232,6 +5438,7 @@ function renderizarGruposDuplicados(array $grupos): string
 				'<div class="duplicados-hashes">' .
 				(!empty($md5s) ? '<span>MD5: <code>' . escaparHtml(duplicadosHashCorto(implode(', ', $md5s), 40)) . '</code></span>' : '') .
 				(!empty($sha256s) ? '<span>SHA-256: <code>' . escaparHtml(duplicadosHashCorto(implode(', ', $sha256s), 48)) . '</code></span>' : '') .
+				($textoTamanoGrupo !== '' ? '<span>' . escaparHtml($textoTamanoGrupo) . '</span>' : '') .
 				(!empty($razones) ? '<span>Razones: ' . escaparHtml(implode(' · ', $razones)) . '</span>' : '') .
 				'</div>' .
 				'<div class="duplicados-grupo-acciones">' .

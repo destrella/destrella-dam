@@ -3064,6 +3064,20 @@ button.abrir-lightbox:active {
 	gap: 0.5rem;
 }
 
+	.duplicados-panel-resumen-extendido {
+		margin-top: 0.6rem;
+		padding: 0.5rem;
+		border: 1px solid var(--border-color);
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--bg-body) 90%, var(--text-body) 10%);
+		color: var(--grey-text);
+		font-size: 0.74rem;
+		font-weight: 700;
+		line-height: 1.35;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
 	.duplicados-panel-resumen {
 		display: grid;
 		gap: 0.15rem;
@@ -3292,13 +3306,30 @@ button.abrir-lightbox:active {
 		height: 0.7rem;
 	}
 
-	.duplicados-buscador-label {
+	.duplicados-fila-controles {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		gap: 0.7rem;
+		min-width: 0;
+	}
+
+	.duplicados-buscador-label,
+	.duplicados-orden-label {
+		display: grid;
+		gap: 0.25rem;
 		font-weight: 800;
+		font-size: 0.82rem;
 	}
 
 	.duplicados-buscador {
 		width: min(100%, 32rem);
 		min-height: 2.15rem;
+	}
+
+	.duplicados-orden-label select {
+		min-height: 2.15rem;
+		min-width: 12rem;
 	}
 
 	.duplicados-lista {
