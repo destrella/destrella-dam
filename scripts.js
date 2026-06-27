@@ -3973,6 +3973,7 @@ document.addEventListener('DOMContentLoaded', function () {
 						window.DAM?.removerBloqueArticulo?.(item.id, '');
 					}
 				});
+				redirigirSiPaginaVacia();
 
 				const mensaje = mensajeResultadoMoverYandex(datos, destino);
 				if (estado) {
@@ -4225,6 +4226,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				document.getElementById(`art_${id}`)?.remove();
 				document.getElementById(`pie_${id}`)?.remove();
 			}
+			redirigirSiPaginaVacia();
 		} catch (err) {
 			mostrarMensajeDetalle(`<p class="respuesta_error">${escaparHtmlCliente(err.message || 'No se pudo enviar a la papelera de Yandex Disk.')}</p>`);
 			boton.disabled = false;
