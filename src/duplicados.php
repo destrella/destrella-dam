@@ -5036,6 +5036,7 @@ function renderizarPanelDuplicados(array $estado): string
 		: 'Grupos: ' . (int) ($resumen['grupos'] ?? 0) . ' · Exactos: ' . (int) ($resumen['exactos'] ?? 0) . ' · Probables: ' . (int) ($resumen['probables'] ?? 0);
 
 	return
+		renderizarFormularioRutaDuplicados($estado) .
 		'<div class="duplicados-panel">' .
 		'<div class="duplicados-panel-resumen">' .
 		'<strong>Duplicados</strong>' .
@@ -5053,9 +5054,19 @@ function renderizarPanelDuplicados(array $estado): string
 		'</div>';
 }
 
-function renderizarControlesDuplicados(array $estado): string
+function renderizarFormularioRutaDuplicados(array $estado): string
 {
 	$baseRel = (string) ($estado['base_rel'] ?? '');
+	return
+		'<form method="get" class="duplicados-ruta-form duplicados-ruta-form-lateral">' .
+		'<input type="hidden" name="panel" value="duplicados">' .
+		'<label for="duplicados-ruta">Ruta local<input id="duplicados-ruta" type="text" name="ruta" value="' . escaparHtml($baseRel) . '" autocomplete="off"></label>' .
+		'<button type="submit">Cambiar ruta</button>' .
+		'</form>';
+}
+
+function renderizarControlesDuplicados(array $estado): string
+{
 	$resumen = $estado['resumen'] ?? [];
 	$local = $estado['local'] ?? [];
 	$yandex = $estado['yandex'] ?? [];
@@ -5093,11 +5104,6 @@ function renderizarControlesDuplicados(array $estado): string
 	return
 		'<div class="filtros-metadatos duplicados-controles">' .
 		'<span class="filtros-metadatos-resumen">' . escaparHtml(implode(' · ', $partes)) . '</span>' .
-		'<form method="get" class="duplicados-ruta-form">' .
-		'<input type="hidden" name="panel" value="duplicados">' .
-		'<label for="duplicados-ruta">Ruta local<input id="duplicados-ruta" type="text" name="ruta" value="' . escaparHtml($baseRel) . '" autocomplete="off"></label>' .
-		'<button type="submit">Cambiar ruta</button>' .
-		'</form>' .
 		'</div>';
 }
 

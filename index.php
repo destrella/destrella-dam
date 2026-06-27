@@ -248,7 +248,8 @@ if ($panelYandexActivo):
 		$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, 'No hay multimedia remota en esta página.');
 	endif;
 endif;
-$estadoDuplicados = $panelDuplicadosActivo ? duplicadosEstado(['ruta' => rutaRelativaParaParametro($rutaIterador)], false) : [];
+$rutaDuplicados = $panelDuplicadosActivo ? (string) ($_GET['ruta'] ?? '') : '';
+$estadoDuplicados = $panelDuplicadosActivo ? duplicadosEstado(['ruta' => $rutaDuplicados], false) : [];
 if ($panelDuplicadosActivo):
 	$html = renderizarVistaDuplicados($estadoDuplicados);
 	$total_de_elementos = (int) ($estadoDuplicados['resumen']['entradas'] ?? 0);

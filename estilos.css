@@ -3909,9 +3909,51 @@ button.abrir-lightbox:active {
 		margin: 0;
 	}
 
+	.duplicados-ruta-form-lateral {
+		display: grid;
+		gap: 0.5rem;
+		padding: 0.65rem;
+		border: 1px solid var(--border-color);
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-body));
+	}
+
+	.duplicados-ruta-form-lateral label {
+		display: grid;
+		gap: 0.3rem;
+		color: var(--text-body);
+		font-size: 0.78rem;
+		font-weight: 800;
+	}
+
 	.duplicados-ruta-form input {
 		min-height: 2rem;
 		min-width: min(24rem, 70vw);
+	}
+
+	.duplicados-ruta-form-lateral input {
+		width: 100%;
+		min-width: 0;
+	}
+
+	.duplicados-ruta-form-lateral button {
+		min-height: 2rem;
+		padding: 0.35rem 0.65rem;
+		border: 1px solid var(--border-color);
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-body));
+		color: var(--text-body);
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 800;
+		line-height: 1.1;
+		cursor: pointer;
+	}
+
+	.duplicados-ruta-form-lateral button:hover,
+	.duplicados-ruta-form-lateral button:focus-visible {
+		border-color: var(--accent-primary);
+		color: var(--accent-secondary);
 	}
 
 	@media (max-width: 820px) {

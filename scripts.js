@@ -984,6 +984,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			let conteosOrigenDuplicadosEnCurso = false;
 			let conteosOrigenDuplicadosActuales = null;
 			let versionConteosOrigenDuplicados = 0;
+			let conteosOrigenDuplicadosReintentoPendiente = false;
 
 			function trabajoDuplicadosActivo(job) {
 				return job && ['queued', 'scanning', 'hashing', 'cancelando'].includes(String(job.estado || ''));
@@ -1071,7 +1072,14 @@ document.addEventListener('DOMContentLoaded', function () {
 					return;
 				}
 				if (conteos.pendiente && conteosOrigenDuplicadosConocidos()) {
+					if (!conteosOrigenDuplicadosReintentoPendiente) {
+						conteosOrigenDuplicadosReintentoPendiente = true;
+						solicitarConteosOrigenDuplicados(true);
+					}
 					return;
+				}
+				if (!conteos.pendiente) {
+					conteosOrigenDuplicadosReintentoPendiente = false;
 				}
 				if (actualizarConteosOrigenDuplicados(conteos)) {
 					solicitarConteosOrigenDuplicados();
@@ -1135,8 +1143,8 @@ document.addEventListener('DOMContentLoaded', function () {
 				}
 			}
 
-			function solicitarConteosOrigenDuplicados() {
-				if (conteosOrigenDuplicadosSolicitados || conteosOrigenDuplicadosEnCurso) return;
+			function solicitarConteosOrigenDuplicados(forzar = false) {
+				if (conteosOrigenDuplicadosEnCurso || (!forzar && conteosOrigenDuplicadosSolicitados)) return;
 				conteosOrigenDuplicadosSolicitados = true;
 				const versionSolicitud = versionConteosOrigenDuplicados;
 				window.setTimeout(async () => {
@@ -2405,6 +2413,7 @@ document.addEventListener('DOMContentLoaded', function () {
 				recargaDuplicadosLocalesPendiente = false;
 				marcaDuplicadosLocalesVista = marca;
 				conteosOrigenDuplicadosSolicitados = false;
+				conteosOrigenDuplicadosReintentoPendiente = false;
 				await cargarGruposDuplicados({ reiniciar: true });
 			}
 
