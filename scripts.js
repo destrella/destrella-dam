@@ -400,6 +400,15 @@ function cantidadArticulosVista(){
 	return document.querySelectorAll('main article[data-panel-id]').length;
 }
 
+function redirigirSiPaginaVacia(){
+	if (cantidadArticulosVista() > 0) return;
+	const parametros = obtenerParametrosVistaActual();
+	if (parametros.total_paginas > 1) {
+		const paginaDestino = Math.max(1, parametros.pagina - 1);
+		redirigirAPaginaVista(paginaDestino, 'Cargando página anterior');
+	}
+}
+
 function manejarPaginacionLote(datos, parametros){
 	const paginacion = datos?.paginacion;
 	if (!paginacion || !paginacion.ok) return false;
