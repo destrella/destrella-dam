@@ -3230,10 +3230,13 @@ document.addEventListener('DOMContentLoaded', function () {
 	const paneles = Array.from(document.querySelectorAll('.panel-articulo[id^="pie_"]'));
 	const articulos = Array.from(document.querySelectorAll('main article[data-panel-id]'));
 	let barraSeleccion = null;
+	let barraSeleccionYandex = null;
 	let modalMoverLote = null;
+	let modalMoverYandex = null;
 	let modalCopiarYandex = null;
 	let carpetasLocalesProyecto = null;
 	let operacionLoteEnCurso = false;
+	let operacionYandexEnCurso = false;
 
 	function escaparHtmlCliente(valor) {
 		const nodo = document.createElement('span');
@@ -3302,6 +3305,175 @@ document.addEventListener('DOMContentLoaded', function () {
 			}
 		});
 		actualizarBarraSeleccion();
+	}
+
+	function normalizarRutaYandexCliente(ruta) {
+		const partes = String(ruta || '')
+			.replace(/\\/g, '/')
+			.replace(/^disk:/, '')
+			.split('/')
+			.map(parte => parte.trim())
+			.filter(parte => parte && parte !== '.');
+		const normalizadas = [];
+		partes.forEach(parte => {
+			if (parte === '..') {
+				normalizadas.pop();
+			} else {
+				normalizadas.push(parte);
+			}
+		});
+		return normalizadas.length ? '/' + normalizadas.join('/') : '/';
+	}
+
+	function articuloYandexMovible(articulo) {
+		return Boolean(
+			articulo
+			&& articulo.matches?.('article.yandex-remoto-articulo[data-yandex-movable="1"][data-yandex-path]')
+			&& !articulo.classList.contains('yandex-remoto-unlimited')
+		);
+	}
+
+	function obtenerArticulosYandexMovibles() {
+		return Array.from(document.querySelectorAll('main article.yandex-remoto-articulo[data-yandex-movable="1"][data-yandex-path]'))
+			.filter(articulo => articuloYandexMovible(articulo));
+	}
+
+	function obtenerSeleccionYandex() {
+		return Array.from(document.querySelectorAll('main .yandex-seleccion-checkbox:checked'))
+			.map(checkbox => {
+				const articulo = checkbox.closest('article.yandex-remoto-articulo[data-panel-id]');
+				const ruta = normalizarRutaYandexCliente(checkbox.dataset.yandexPath || articulo?.dataset.yandexPath || '');
+				const id = checkbox.dataset.articuloId || idArticuloDesdeArticulo(articulo);
+				const nombre = checkbox.dataset.yandexName || articulo?.dataset.yandexName || ruta.split('/').pop() || ruta;
+				return { checkbox, articulo, ruta, id, nombre };
+			})
+			.filter(item => item.articulo && item.ruta !== '/' && item.id);
+	}
+
+	function crearBarraSeleccionYandex() {
+		if (barraSeleccionYandex) return barraSeleccionYandex;
+
+		barraSeleccionYandex = document.createElement('div');
+		barraSeleccionYandex.className = 'acciones-lote acciones-lote-yandex';
+		barraSeleccionYandex.hidden = true;
+		barraSeleccionYandex.setAttribute('role', 'region');
+		barraSeleccionYandex.setAttribute('aria-live', 'polite');
+		barraSeleccionYandex.innerHTML =
+			'<strong data-yandex-seleccion-total>0 archivos seleccionados</strong>' +
+			'<div class="acciones-lote-botones">' +
+				'<button type="button" data-yandex-lote="seleccionar-todos">Seleccionar todos</button>' +
+				'<button type="button" data-yandex-lote="mover">Mover</button>' +
+				'<button type="button" data-yandex-lote="limpiar">Limpiar</button>' +
+			'</div>';
+
+		barraSeleccionYandex.addEventListener('click', function (ev) {
+			const boton = ev.target.closest?.('[data-yandex-lote]');
+			if (!boton || operacionYandexEnCurso) return;
+			const accion = boton.dataset.yandexLote;
+			if (accion === 'seleccionar-todos') {
+				seleccionarTodosYandexMostrados();
+			} else if (accion === 'mover') {
+				abrirModalMoverYandex();
+			} else if (accion === 'limpiar') {
+				limpiarSeleccionYandex();
+			}
+		});
+
+		const columnaContenido = document.querySelector('.col-contenido');
+		const main = document.querySelector('main');
+		if (columnaContenido && main) {
+			columnaContenido.insertBefore(barraSeleccionYandex, main);
+		} else {
+			document.body.appendChild(barraSeleccionYandex);
+		}
+		return barraSeleccionYandex;
+	}
+
+	function actualizarBarraSeleccionYandex() {
+		const articulosMovibles = obtenerArticulosYandexMovibles();
+		if (!articulosMovibles.length) {
+			if (barraSeleccionYandex) barraSeleccionYandex.hidden = true;
+			return;
+		}
+
+		const barra = crearBarraSeleccionYandex();
+		const seleccion = obtenerSeleccionYandex();
+		articulosMovibles.forEach(articulo => {
+			const checkbox = articulo.querySelector('.yandex-seleccion-checkbox');
+			articulo.classList.toggle('seleccionado', Boolean(checkbox?.checked));
+		});
+
+		barra.hidden = false;
+		barra.querySelector('[data-yandex-seleccion-total]').textContent =
+			seleccion.length === 1 ? '1 archivo seleccionado' : `${seleccion.length} archivos seleccionados`;
+		if (!operacionYandexEnCurso) {
+			barra.querySelectorAll('button').forEach(boton => {
+				const accion = boton.dataset.yandexLote;
+				boton.disabled = accion === 'mover' || accion === 'limpiar' ? seleccion.length === 0 : false;
+			});
+		}
+	}
+
+	function alternarAccionesYandexOcupadas(ocupadas) {
+		const barra = crearBarraSeleccionYandex();
+		barra.querySelectorAll('button').forEach(boton => {
+			boton.disabled = ocupadas;
+		});
+		if (modalMoverYandex) {
+			modalMoverYandex.querySelectorAll('button, select, input').forEach(control => {
+				control.disabled = ocupadas;
+			});
+		}
+	}
+
+	function limpiarSeleccionYandex() {
+		document.querySelectorAll('main .yandex-seleccion-checkbox:checked').forEach(checkbox => {
+			checkbox.checked = false;
+		});
+		actualizarBarraSeleccionYandex();
+	}
+
+	function seleccionarTodosYandexMostrados() {
+		obtenerArticulosYandexMovibles().forEach(articulo => {
+			if (articulo.hidden || articulo.getClientRects().length === 0) return;
+			const checkbox = articulo.querySelector('.yandex-seleccion-checkbox');
+			if (checkbox && !checkbox.disabled) {
+				checkbox.checked = true;
+			}
+		});
+		actualizarBarraSeleccionYandex();
+	}
+
+	function insertarControlSeleccionYandex(articulo) {
+		if (!articuloYandexMovible(articulo)) return;
+		const figure = articulo.querySelector('figure');
+		if (!figure || figure.querySelector('.yandex-seleccion-control')) return;
+
+		const ruta = normalizarRutaYandexCliente(articulo.dataset.yandexPath || '');
+		if (ruta === '/') return;
+
+		const label = document.createElement('label');
+		label.className = 'seleccion-archivo-control yandex-seleccion-control';
+		label.title = 'Seleccionar archivo de Yandex';
+		label.setAttribute('aria-label', 'Seleccionar archivo de Yandex');
+
+		const checkbox = document.createElement('input');
+		checkbox.type = 'checkbox';
+		checkbox.className = 'yandex-seleccion-checkbox';
+		checkbox.dataset.articuloId = idArticuloDesdeArticulo(articulo);
+		checkbox.dataset.yandexPath = ruta;
+		checkbox.dataset.yandexName = articulo.dataset.yandexName || ruta.split('/').pop() || ruta;
+		checkbox.checked = articulo.classList.contains('seleccionado');
+
+		const texto = document.createElement('span');
+		texto.className = 'seleccion-archivo-texto';
+		texto.textContent = 'Seleccionar archivo de Yandex';
+
+		label.append(checkbox, texto);
+		label.addEventListener('click', ev => ev.stopPropagation());
+		checkbox.addEventListener('click', ev => ev.stopPropagation());
+		checkbox.addEventListener('change', actualizarBarraSeleccionYandex);
+		figure.prepend(label);
 	}
 
 	function crearBarraSeleccion() {
@@ -3569,6 +3741,240 @@ document.addEventListener('DOMContentLoaded', function () {
 				actualizarBarraSeleccion();
 				alternarAccionesLoteOcupadas(false);
 			}
+		}
+		}
+
+		function rutaActualYandexCliente() {
+			const params = new URLSearchParams(window.location.search);
+			const controlRuta = document.querySelector('.yandex-orden-form input[name="yandex_path"]');
+			return normalizarRutaYandexCliente(controlRuta?.value || params.get('yandex_path') || '/');
+		}
+
+		function rutaPadreYandexCliente(ruta) {
+			ruta = normalizarRutaYandexCliente(ruta);
+			if (ruta === '/') return '/';
+			const partes = ruta.replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+			partes.pop();
+			return partes.length ? '/' + partes.join('/') : '/';
+		}
+
+		function etiquetaDestinoYandex(ruta) {
+			return ruta === '/' ? 'Raíz de Yandex.Disk' : ruta;
+		}
+
+		function opcionesDestinoYandex() {
+			const opciones = new Map();
+			opciones.set('/', 'Raíz de Yandex.Disk');
+
+			const actual = rutaActualYandexCliente();
+			opciones.set(actual, actual === '/' ? 'Raíz de Yandex.Disk' : `Ruta actual: ${actual}`);
+
+			obtenerSeleccionYandex().forEach(item => {
+				const padre = rutaPadreYandexCliente(item.ruta);
+				if (!opciones.has(padre)) {
+					opciones.set(padre, padre === '/' ? 'Raíz de Yandex.Disk' : `Origen: ${padre}`);
+				}
+			});
+
+			document.querySelectorAll('#panel-yandex .yandex-media-item-dir').forEach(enlace => {
+				const ruta = normalizarRutaYandexCliente(
+					enlace.getAttribute('title')
+					|| enlace.querySelector('.yandex-media-ruta')?.textContent
+					|| ''
+				);
+				if (ruta !== '/' && !opciones.has(ruta)) {
+					opciones.set(ruta, etiquetaDestinoYandex(ruta));
+				}
+			});
+
+			return Array.from(opciones.entries()).sort((a, b) => {
+				if (a[0] === '/') return -1;
+				if (b[0] === '/') return 1;
+				return a[0].localeCompare(b[0], 'es', { numeric: true, sensitivity: 'base' });
+			});
+		}
+
+		function poblarSelectorDestinosYandexRemotos(select, input) {
+			if (!select) return;
+			const valorPrevio = normalizarRutaYandexCliente(input?.value || select.value || rutaActualYandexCliente());
+			select.textContent = '';
+			opcionesDestinoYandex().forEach(([ruta, etiqueta]) => {
+				const option = document.createElement('option');
+				option.value = ruta;
+				option.textContent = etiqueta;
+				select.appendChild(option);
+			});
+			select.value = Array.from(select.options).some(option => option.value === valorPrevio)
+				? valorPrevio
+				: '/';
+			if (input) {
+				input.value = select.value || '/';
+			}
+		}
+
+		function cerrarModalMoverYandex() {
+			const modal = crearModalMoverYandex();
+			modal.hidden = true;
+			modal.querySelector('form')?.reset();
+			const estado = modal.querySelector('[data-yandex-move-status]');
+			if (estado) {
+				estado.textContent = '';
+				estado.className = 'modal-lote-estado';
+			}
+		}
+
+		function abrirModalMoverYandex() {
+			const seleccion = obtenerSeleccionYandex();
+			if (!seleccion.length) return;
+			const modal = crearModalMoverYandex();
+			const contexto = modal.querySelector('[data-yandex-move-contexto]');
+			const select = modal.querySelector('[name="destino"]');
+			const input = modal.querySelector('[name="destino_manual"]');
+			const estado = modal.querySelector('[data-yandex-move-status]');
+			if (contexto) {
+				contexto.textContent = seleccion.length === 1
+					? seleccion[0].ruta
+					: `${seleccion.length} archivos seleccionados`;
+			}
+			if (estado) {
+				estado.textContent = '';
+				estado.className = 'modal-lote-estado';
+			}
+			poblarSelectorDestinosYandexRemotos(select, input);
+			modal.hidden = false;
+			requestAnimationFrame(() => input?.focus());
+		}
+
+		function crearModalMoverYandex() {
+			if (modalMoverYandex) return modalMoverYandex;
+
+			modalMoverYandex = document.createElement('div');
+			modalMoverYandex.id = 'modal-yandex-mover';
+			modalMoverYandex.className = 'modal-lote';
+			modalMoverYandex.hidden = true;
+			modalMoverYandex.setAttribute('role', 'dialog');
+			modalMoverYandex.setAttribute('aria-modal', 'true');
+			modalMoverYandex.setAttribute('aria-labelledby', 'modal-yandex-mover-titulo');
+			modalMoverYandex.innerHTML =
+				'<div class="modal-lote-panel">' +
+					'<form>' +
+						'<h2 id="modal-yandex-mover-titulo">Mover en Yandex.Disk</h2>' +
+						'<p class="modal-lote-contexto" data-yandex-move-contexto></p>' +
+						'<label>Carpeta destino' +
+							'<select name="destino"></select>' +
+						'</label>' +
+						'<label>Ruta destino' +
+							'<input type="text" name="destino_manual" autocomplete="off" placeholder="/media">' +
+						'</label>' +
+						'<output class="modal-lote-estado" data-yandex-move-status aria-live="polite"></output>' +
+						'<div class="modal-lote-acciones">' +
+							'<button type="button" data-modal-cancelar>Cancelar</button>' +
+							'<button type="submit">Mover</button>' +
+						'</div>' +
+					'</form>' +
+				'</div>';
+
+			const select = modalMoverYandex.querySelector('[name="destino"]');
+			const input = modalMoverYandex.querySelector('[name="destino_manual"]');
+			select?.addEventListener('change', function () {
+				if (input) input.value = select.value || '/';
+			});
+			modalMoverYandex.addEventListener('click', function (ev) {
+				if (ev.target === modalMoverYandex || ev.target.closest?.('[data-modal-cancelar]')) {
+					cerrarModalMoverYandex();
+				}
+			});
+			modalMoverYandex.querySelector('form').addEventListener('submit', async function (ev) {
+				ev.preventDefault();
+				await moverSeleccionYandex(ev.currentTarget);
+			});
+			document.addEventListener('keydown', function (ev) {
+				if (ev.key === 'Escape' && !modalMoverYandex.hidden) {
+					cerrarModalMoverYandex();
+				}
+			});
+			document.body.appendChild(modalMoverYandex);
+			return modalMoverYandex;
+		}
+
+		function mensajeResultadoMoverYandex(datos, destino) {
+			const procesados = Number(datos?.procesados || 0);
+			const errores = Array.isArray(datos?.errores) ? datos.errores : [];
+			let html = `<p><b>Yandex Disk:</b> ${procesados} archivo${procesados === 1 ? '' : 's'} movido${procesados === 1 ? '' : 's'} a ${escaparHtmlCliente(destino)}.</p>`;
+			if (errores.length) {
+				html += '<ul class="errores-lote">';
+				errores.slice(0, 6).forEach(error => {
+					html += `<li>${escaparHtmlCliente(error.origen || 'Archivo')}: ${escaparHtmlCliente(error.error || 'No se pudo mover.')}</li>`;
+				});
+				if (errores.length > 6) {
+					html += `<li>${errores.length - 6} errores más.</li>`;
+				}
+				html += '</ul>';
+			}
+			return html;
+		}
+
+		async function moverSeleccionYandex(form) {
+			const seleccion = obtenerSeleccionYandex();
+			if (!seleccion.length || operacionYandexEnCurso) return false;
+
+			const estado = form.querySelector('[data-yandex-move-status]');
+			const destino = normalizarRutaYandexCliente(form.elements.destino_manual?.value || form.elements.destino?.value || '/');
+			operacionYandexEnCurso = true;
+			alternarAccionesYandexOcupadas(true);
+			if (estado) {
+				estado.className = 'modal-lote-estado';
+				estado.textContent = 'Moviendo archivos...';
+			}
+			mostrarCargaNavegacion('Moviendo en Yandex');
+
+			try {
+				const respuesta = await fetch('yandex_move.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+					body: JSON.stringify({
+						paths: seleccion.map(item => item.ruta),
+						destino
+					})
+				});
+				const datos = await respuesta.json().catch(() => null);
+				if (!respuesta.ok || !datos?.ok) {
+					throw new Error(datos?.error || `HTTP ${respuesta.status}`);
+				}
+
+				const rutasProcesadas = new Set(
+					(datos.resultados || [])
+						.filter(resultado => resultado.ok)
+						.map(resultado => normalizarRutaYandexCliente(resultado.origen))
+				);
+				seleccion.forEach(item => {
+					if (rutasProcesadas.has(normalizarRutaYandexCliente(item.ruta))) {
+						window.DAM?.removerBloqueArticulo?.(item.id, '');
+					}
+				});
+
+				const mensaje = mensajeResultadoMoverYandex(datos, destino);
+				if (estado) {
+					estado.classList.add(datos.errores?.length ? 'error' : 'ok');
+					estado.textContent = `${Number(datos.procesados || 0)} archivo${Number(datos.procesados || 0) === 1 ? '' : 's'} movido${Number(datos.procesados || 0) === 1 ? '' : 's'}.`;
+				}
+				mostrarMensajeDetalle(mensaje);
+				cerrarModalMoverYandex();
+				actualizarBarraSeleccionYandex();
+				return rutasProcesadas.size > 0;
+			} catch (err) {
+				const mensaje = err.message || 'No se pudo mover la selección en Yandex Disk.';
+				if (estado) {
+					estado.classList.add('error');
+					estado.textContent = mensaje;
+				}
+				mostrarMensajeDetalle(`<p class="respuesta_error">${escaparHtmlCliente(mensaje)}</p>`);
+				return false;
+			} finally {
+				operacionYandexEnCurso = false;
+				alternarAccionesYandexOcupadas(false);
+				actualizarBarraSeleccionYandex();
+				ocultarCargaNavegacion();
 			}
 		}
 
@@ -4035,6 +4441,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		const figure = articulo.querySelector('figure');
 		if (!figure) return;
 
+		insertarControlSeleccionYandex(articulo);
 		insertarControlSeleccion(articulo);
 
 		let contenedor = figure.querySelector('.indicadores-articulo');
@@ -4266,6 +4673,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		articulo?.remove();
 		panel?.remove();
 		actualizarBarraSeleccion();
+		actualizarBarraSeleccionYandex();
 
 		if (estabaActivo) {
 			mostrarMensajeDetalle(mensajeHtml);
@@ -4296,6 +4704,7 @@ document.addEventListener('DOMContentLoaded', function () {
 	articulos.forEach(articulo => {
 		registrarArticulo(articulo);
 	});
+	actualizarBarraSeleccionYandex();
 
 	// Selecciona todos los contenedores tipo 'form_N'
 	const formularios = document.querySelectorAll('[id^="pie_"]');

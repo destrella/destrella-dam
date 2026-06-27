@@ -259,6 +259,46 @@ function depurarCacheRecursoYandexDisk(string $ruta): array
 	return $resultado;
 }
 
+function invalidarCacheDirectorioYandexDisk(string $ruta): int
+{
+	$ruta = normalizarRutaYandexDisk($ruta);
+	if (!prepararDirectorioCacheYandexDisk()):
+		return 0;
+	endif;
+
+	$eliminados = 0;
+	foreach (glob(rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'resources-*.json') ?: [] as $archivo):
+		if (!is_file($archivo)):
+			continue;
+		endif;
+		$payload = json_decode((string) file_get_contents($archivo), true);
+		if (!is_array($payload) || (int) ($payload['version'] ?? 0) !== YANDEX_DISK_CACHE_VERSION || !is_array($payload['data'] ?? null)):
+			continue;
+		endif;
+		$rutaCache = (string) ($payload['data']['path'] ?? $payload['data']['_embedded']['path'] ?? '');
+		if ($rutaCache !== '' && normalizarRutaYandexDisk($rutaCache) === $ruta && @unlink($archivo)):
+			$eliminados++;
+		endif;
+	endforeach;
+
+	return $eliminados;
+}
+
+function invalidarCacheUltimosSubidosYandexDisk(): int
+{
+	if (!prepararDirectorioCacheYandexDisk()):
+		return 0;
+	endif;
+
+	$eliminados = 0;
+	foreach (glob(rutaDirectorioCacheYandexDisk() . DIRECTORY_SEPARATOR . 'resources-last-uploaded-*.json') ?: [] as $archivo):
+		if (is_file($archivo) && @unlink($archivo)):
+			$eliminados++;
+		endif;
+	endforeach;
+	return $eliminados;
+}
+
 function yandexDiskMarcarRecursoAusente(string $ruta, string $motivo = ''): array
 {
 	$ruta = normalizarRutaYandexDisk($ruta);
@@ -573,6 +613,17 @@ function rutaPadreYandexDisk(string $ruta): ?string
 	$partes = explode('/', trim($ruta, '/'));
 	array_pop($partes);
 	return empty($partes) ? '/' : '/' . implode('/', $partes);
+}
+
+function rutaHijaYandexDisk(string $directorio, string $nombre): string
+{
+	$directorio = normalizarRutaYandexDisk($directorio);
+	$nombre = basename(str_replace('\\', '/', trim($nombre)));
+	if ($nombre === '' || $nombre === '.' || $nombre === '..'):
+		return '/';
+	endif;
+
+	return normalizarRutaYandexDisk(($directorio === '/' ? '' : $directorio) . '/' . $nombre);
 }
 
 function yandexDiskFormatoTamano(?int $bytes): string
@@ -1049,6 +1100,76 @@ function enviarPapeleraYandexDisk(array $configuracion, string $ruta): array
 		'ok' => true,
 		'status' => (int) ($respuesta['status'] ?? 200),
 		'error' => '',
+		'data' => $respuesta['data'] ?? [],
+		'cache' => $cache,
+	];
+}
+
+function moverRecursoYandexDisk(array $configuracion, string $origen, string $directorioDestino): array
+{
+	$token = yandexDiskApiKeyConfiguracion($configuracion);
+	if ($token === ''):
+		return ['ok' => false, 'status' => 401, 'error' => 'No hay API Key de Yandex.Disk configurada.'];
+	endif;
+
+	$origen = normalizarRutaYandexDisk($origen);
+	$directorioDestino = normalizarRutaYandexDisk($directorioDestino);
+	if ($origen === '/'):
+		return ['ok' => false, 'status' => 400, 'error' => 'Ruta de origen inválida.'];
+	endif;
+	if (yandexDiskRutaEsUnlimited($origen)):
+		return ['ok' => false, 'status' => 400, 'error' => 'Los archivos de Photos/photounlim no se pueden mover desde la API de recursos.'];
+	endif;
+
+	$destino = rutaHijaYandexDisk($directorioDestino, basename($origen));
+	if ($destino === '/' || $destino === $origen):
+		return ['ok' => false, 'status' => 400, 'error' => 'El archivo ya está en esa carpeta.'];
+	endif;
+
+	$respuesta = yandexDiskPeticion('resources/move', [
+		'from' => rutaApiYandexDisk($origen),
+		'path' => rutaApiYandexDisk($destino),
+		'overwrite' => 'false',
+		'fields' => 'href,method,templated',
+	], $token, 30, 'POST');
+
+	if (!$respuesta['ok']):
+		if ((int) ($respuesta['status'] ?? 0) === 404):
+			$cache = yandexDiskMarcarRecursoAusente($origen, 'move_404');
+			return [
+				'ok' => false,
+				'status' => 404,
+				'error' => 'Yandex Disk no encontró el archivo de origen; se limpió el cache local.',
+				'origen' => $origen,
+				'destino' => $destino,
+				'cache' => $cache,
+			];
+		endif;
+		return [
+			'ok' => false,
+			'status' => (int) ($respuesta['status'] ?? 502),
+			'error' => (string) ($respuesta['error'] ?? 'No se pudo mover el archivo en Yandex Disk.'),
+			'origen' => $origen,
+			'destino' => $destino,
+		];
+	endif;
+
+	$cache = yandexDiskMarcarRecursoAusente($origen, 'move');
+	$cache['directorios_invalidados'] = 0;
+	$padreOrigen = rutaPadreYandexDisk($origen);
+	if ($padreOrigen !== null):
+		$cache['directorios_invalidados'] += invalidarCacheDirectorioYandexDisk($padreOrigen);
+	endif;
+	$cache['directorios_invalidados'] += invalidarCacheDirectorioYandexDisk($directorioDestino);
+	$cache['ultimos_subidos_invalidados'] = invalidarCacheUltimosSubidosYandexDisk();
+
+	return [
+		'ok' => true,
+		'status' => (int) ($respuesta['status'] ?? 200),
+		'error' => '',
+		'origen' => $origen,
+		'destino' => $destino,
+		'directorio_destino' => $directorioDestino,
 		'data' => $respuesta['data'] ?? [],
 		'cache' => $cache,
 	];

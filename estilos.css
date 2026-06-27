@@ -2173,6 +2173,10 @@ article.seleccionado {
 	cursor: pointer;
 }
 
+.yandex-seleccion-control {
+	z-index: 5;
+}
+
 .seleccion-archivo-texto {
 	position: absolute;
 	width: 1px;
@@ -2204,6 +2208,10 @@ article.seleccionado {
 
 .acciones-lote[hidden] {
 	display: none;
+}
+
+.acciones-lote-yandex {
+	background: color-mix(in srgb, var(--bg-body) 92%, #0f8f94 8%);
 }
 
 .acciones-lote-botones {

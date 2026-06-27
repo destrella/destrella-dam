@@ -429,9 +429,12 @@ function renderizarMultimediaYandexDisk(array $items, int $indiceInicial = 1, st
 		$atributoOrigen = $esPhotos
 			? ' data-yandex-photo-id="' . escaparHtml($photoId) . '"'
 			: ' data-yandex-path="' . escaparHtml($ruta) . '"';
+		$atributosMovimiento = (!$esPhotos && !$desdeUnlimited && $ruta !== '')
+			? ' data-yandex-movable="1" data-yandex-name="' . escaparHtml($nombre) . '"'
+			: '';
 
 		$html .=
-			'<article id="art_' . escaparHtml($id) . '" data-panel-id="' . escaparHtml($panelId) . '"' . $atributoOrigen . ' class="yandex-remoto-articulo yandex-remoto-' . escaparHtml($tipo) . $claseOrigen . '" tabindex="0">' .
+			'<article id="art_' . escaparHtml($id) . '" data-panel-id="' . escaparHtml($panelId) . '"' . $atributoOrigen . $atributosMovimiento . ' class="yandex-remoto-articulo yandex-remoto-' . escaparHtml($tipo) . $claseOrigen . '" tabindex="0">' .
 			'<figure>' .
 			'<button type="button" class="yandex-remoto-preview" title="' . escaparHtml($rutaVisible) . '" aria-label="Mostrar detalles de ' . escaparHtml($nombre) . '">' .
 			$miniatura .
