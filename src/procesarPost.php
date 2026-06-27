@@ -261,6 +261,21 @@ function vistaDebeVolverARaiz(array $json): bool
 	return resolverDirectorioVista($json['vista_ruta'] ?? null, $json['vista_archivo'] ?? null) === null;
 }
 
+function rutaClienteVistaLocal(array $resultado): string
+{
+	$ruta = (string) ($resultado[0] ?? '');
+	if ($ruta === ''):
+		return '';
+	endif;
+
+	$rutaCliente = urlVisualizacion($ruta);
+	if (str_starts_with($rutaCliente, 'servir.php')):
+		return $ruta;
+	endif;
+
+	return $rutaCliente;
+}
+
 function estadoPaginacionVistaLocal(array $json): array
 {
 	$paginaSolicitada = max(1, (int) ($json['pagina'] ?? 1));
@@ -286,13 +301,14 @@ function estadoPaginacionVistaLocal(array $json): array
 				'pagina_corregida' => $paginaSolicitada !== 1,
 			];
 		endif;
-		$resultados = obtenerResultadosMultimediaEscaneo($rutaIterador, null, carpetasIgnoradasConfiguracion(), $media);
+		$resultados = obtenerResultadosMultimedia($rutaIterador, null, carpetasIgnoradasConfiguracion(), $media);
 	endif;
 
 	$resultados = filtrarResultadosPorMetadatos($resultados, obtenerFiltrosMetadatosDesdeFuente($json));
 	$totalElementos = count($resultados);
 	$totalPaginas = max(1, (int) ceil($totalElementos / $ver));
 	$paginaActual = max(1, min($paginaSolicitada, $totalPaginas));
+	$indiceInicial = ($paginaActual - 1) * $ver;
 
 	return [
 		'ok' => true,
@@ -302,8 +318,16 @@ function estadoPaginacionVistaLocal(array $json): array
 		'pagina_actual' => $paginaActual,
 		'ver' => $ver,
 		'pagina_corregida' => $paginaActual !== $paginaSolicitada,
+		'primer_archivo' => isset($resultados[0]) ? rutaClienteVistaLocal($resultados[0]) : '',
+		'primer_archivo_pagina' => isset($resultados[$indiceInicial]) ? rutaClienteVistaLocal($resultados[$indiceInicial]) : '',
 	];
 }
+
+if (array_key_exists('estado_vista_local', $json)):
+	header('Content-Type: application/json; charset=UTF-8');
+	echo json_encode(estadoPaginacionVistaLocal($json), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+	exit;
+endif;
 
 if (array_key_exists('operacion_lote', $json)):
 	header('Content-Type: application/json; charset=UTF-8');

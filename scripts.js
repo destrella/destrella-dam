@@ -284,6 +284,71 @@ function obtenerParametrosVistaActual(){
 	};
 }
 
+function totalElementosVistaActual(){
+	const resumen = document.querySelector('.filtros-metadatos-resumen')?.textContent || '';
+	const coincidencia = resumen.match(/^\s*(\d+)\s+de\s+\d+/);
+	return coincidencia ? Number(coincidencia[1]) : null;
+}
+
+function primerArchivoPaginaActual(){
+	return document.querySelector('main article[data-panel-id] [data-ruta]')?.dataset.ruta || '';
+}
+
+function vistaLocalActivaRevisable(){
+	const params = new URLSearchParams(window.location.search);
+	const panel = params.get('panel') || '';
+	if (panel === 'duplicados' || panel === 'yandex') return false;
+	if (document.hidden) return false;
+	if (!document.querySelector('main')) return false;
+	if (document.querySelector('[data-guardando="1"], [aria-busy="true"]')) return false;
+	if (document.activeElement?.closest?.('input, textarea, select, [contenteditable="true"]')) return false;
+	return true;
+}
+
+let revisionVistaLocalEnCurso = false;
+let ultimaRevisionVistaLocal = 0;
+
+async function revisarCambiosVistaLocal(forzar = false){
+	if (!vistaLocalActivaRevisable()) return;
+	if (revisionVistaLocalEnCurso) return;
+
+	const ahora = Date.now();
+	if (!forzar && ultimaRevisionVistaLocal > 0 && ahora - ultimaRevisionVistaLocal < 15000) return;
+	ultimaRevisionVistaLocal = ahora;
+
+	const parametros = obtenerParametrosVistaActual();
+	if (parametros.palabra_clave) return;
+
+	revisionVistaLocalEnCurso = true;
+	try {
+		const respuesta = await fetch('index.php', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+			body: JSON.stringify({
+				estado_vista_local: true,
+				...parametros
+			})
+		});
+		const datos = await respuesta.json().catch(() => null);
+		if (!respuesta.ok || !datos?.ok) return;
+
+		const totalActual = totalElementosVistaActual();
+		const primerActual = primerArchivoPaginaActual();
+		const totalNuevo = Number(datos.total_elementos);
+		const primerNuevo = datos.primer_archivo_pagina || '';
+		const totalCambio = totalActual !== null && Number.isFinite(totalNuevo) && totalActual !== totalNuevo;
+		const primerCambio = primerNuevo && primerActual && primerNuevo !== primerActual;
+		const paginaVaciaConContenido = !primerActual && primerNuevo;
+
+		if (totalCambio || primerCambio || paginaVaciaConContenido) {
+			mostrarCargaNavegacion('Actualizando archivos');
+			window.location.reload();
+		}
+	} finally {
+		revisionVistaLocalEnCurso = false;
+	}
+}
+
 function normalizarRutaVista(ruta){
 	return (ruta || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
 }
@@ -718,6 +783,21 @@ function corregirRegiones(id, eje){
 document.addEventListener('DOMContentLoaded', function () {
 	obtenerOverlayCargaNavegacion();
 	window.addEventListener('pageshow', ocultarCargaNavegacion);
+	let temporizadorRevisionVistaLocal = null;
+	const programarRevisionVistaLocal = (forzar = false, demora = 600) => {
+		window.clearTimeout(temporizadorRevisionVistaLocal);
+		temporizadorRevisionVistaLocal = window.setTimeout(() => {
+			revisarCambiosVistaLocal(forzar);
+		}, demora);
+	};
+	window.addEventListener('pageshow', () => programarRevisionVistaLocal(true, 1200));
+	window.addEventListener('focus', () => programarRevisionVistaLocal(true, 500));
+	document.addEventListener('visibilitychange', () => {
+		if (!document.hidden) {
+			programarRevisionVistaLocal(true, 500);
+		}
+	});
+	window.setInterval(() => revisarCambiosVistaLocal(false), 45000);
 	const claveFocoPalabraClave = 'dam.palabrasClave.foco';
 
 	function leerStorageSesion(clave) {
