@@ -554,17 +554,37 @@ if (array_key_exists('relleno_pagina', $json)):
 
 	echo crearBloqueLigero($resultados[$indice][0], $id, $resultados[$indice][1]);
 elseif (array_key_exists('estado_metadatos', $json)):
-	$ruta = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
+	$esYandex = !empty($json['yandex']);
 	$id = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) ($json['id'] ?? ''));
-	$media = ($json['media'] ?? '') === 'vid' ? 'vid' : 'img';
 
-	if ($id === '' || $ruta === null):
-		http_response_code(400);
-		echo 'No se pudo actualizar el estado del formulario.';
-		exit;
+	if ($esYandex):
+		$ruta = normalizarRutaYandexDisk($json['ruta'] ?? '');
+		$media = ($json['media'] ?? '') === 'vid' ? 'vid' : 'img';
+		if ($id === '' || $ruta === '/' || $ruta === ''):
+			http_response_code(400);
+			echo 'No se pudo actualizar el estado del formulario.';
+			exit;
+		endif;
+		$configuracion = cargarConfiguracion();
+		$recurso = obtenerRecursoYandexDisk($configuracion, $ruta);
+		if (!$recurso['ok'] || $recurso['recurso'] === null):
+			http_response_code(502);
+			echo 'No se pudo obtener información del archivo de Yandex Disk.';
+			exit;
+		endif;
+		echo renderizarBloqueYandexDisk($recurso['recurso'], $id);
+	else:
+		$ruta = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
+		$media = ($json['media'] ?? '') === 'vid' ? 'vid' : 'img';
+
+		if ($id === '' || $ruta === null):
+			http_response_code(400);
+			echo 'No se pudo actualizar el estado del formulario.';
+			exit;
+		endif;
+
+		echo crearBloque($ruta, $id, $media);
 	endif;
-
-	echo crearBloque($ruta, $id, $media);
 elseif (array_key_exists('corregir_region', $json)):
 	$ruta = resolverRutaTolerante($json['ruta'] ?? null, 'file', false);
 	$eje = (string) ($json['corregir_region'] ?? '');

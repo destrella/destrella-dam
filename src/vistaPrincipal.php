@@ -444,9 +444,11 @@ function renderizarMultimediaYandexDisk(array $items, int $indiceInicial = 1, st
 		$atributosMovimiento = (!$esPhotos && !$desdeUnlimited && $ruta !== '')
 			? ' data-yandex-movable="1" data-yandex-name="' . escaparHtml($nombre) . '"'
 			: '';
+		$rutaDetalle = $esPhotos ? $photoId : $ruta;
+		$tipoDetalle = $tipo === 'video' ? 'vid' : 'img';
 
 		$html .=
-			'<article id="art_' . escaparHtml($id) . '" data-panel-id="' . escaparHtml($panelId) . '"' . $atributoOrigen . $atributosMovimiento . ' class="yandex-remoto-articulo yandex-remoto-' . escaparHtml($tipo) . $claseOrigen . '" tabindex="0">' .
+			'<article id="art_' . escaparHtml($id) . '" data-panel-id="' . escaparHtml($panelId) . '"' . $atributoOrigen . $atributosMovimiento . ' data-detalle-ruta="' . escaparHtml($rutaDetalle) . '" data-detalle-media="' . escaparHtml($tipoDetalle) . '" class="yandex-remoto-articulo yandex-remoto-' . escaparHtml($tipo) . $claseOrigen . '" tabindex="0">' .
 			'<figure>' .
 			'<button type="button" class="yandex-remoto-preview" title="' . escaparHtml($rutaVisible) . '" aria-label="Mostrar detalles de ' . escaparHtml($nombre) . '">' .
 			$miniatura .
@@ -459,8 +461,7 @@ function renderizarMultimediaYandexDisk(array $items, int $indiceInicial = 1, st
 			($meta !== '' ? '<small>' . escaparHtml($meta) . '</small>' : '') .
 			'</figcaption>' .
 			'</figure>' .
-			'</article>' .
-			renderizarDetalleYandexDisk($item, $id);
+			'</article>';
 		$indice++;
 	endforeach;
 
@@ -534,6 +535,74 @@ function renderizarDetalleYandexDisk(array $item, string $id): string
 		'</section>';
 
 	return $html;
+}
+
+function renderizarBloqueYandexDisk(array $item, string $id): string
+{
+	$nombre = (string) ($item['nombre'] ?? '');
+	$ruta = (string) ($item['ruta'] ?? '');
+	$namespace = (string) ($item['namespace'] ?? 'disk');
+	$esPhotos = $namespace === 'photos';
+	$photoId = (string) ($item['photo_id'] ?? $item['id'] ?? '');
+	$rutaVisible = $esPhotos ? (string) ($item['ruta_visible'] ?? 'From unlimited storage') : $ruta;
+	$tipo = (string) ($item['tipo'] ?? 'image');
+	$tipoTexto = $tipo === 'video' ? 'Video' : 'Imagen';
+	$tamano = (string) ($item['tamano_legible'] ?? '');
+	$fecha = formatearFechaYandexDisk((string) ($item['modificado'] ?? ''));
+	$desdeUnlimited = !empty($item['desde_unlimited']);
+	$origen = $desdeUnlimited ? (string) ($item['origen'] ?? 'From unlimited storage') : '';
+	$meta = implode(' · ', array_filter([$tipoTexto, $tamano, $fecha, $origen], fn($valor) => $valor !== ''));
+	$preview = (string) ($item['preview'] ?? '');
+	$panelId = 'pie_' . $id;
+	$previewLightbox = (string) ($item['preview_lightbox'] ?? '');
+	if ($tipo === 'video'):
+		$lightboxHref = $esPhotos ? yandexDiskPhotoMediaProxyUrl($photoId, $tipo, $nombre) : yandexDiskMediaProxyUrl($ruta);
+	elseif ($esPhotos || $desdeUnlimited):
+		$previewLightbox = $previewLightbox !== '' ? $previewLightbox : $preview;
+		$lightboxHref = $previewLightbox !== ''
+			? yandexDiskPhotoPreviewProxyUrl($previewLightbox)
+			: yandexDiskLightboxPreviewProxyUrl($ruta);
+	else:
+		$lightboxHref = yandexDiskLightboxPreviewProxyUrl($ruta);
+	endif;
+	$previewSrc = $preview !== ''
+		? (($esPhotos || $desdeUnlimited) ? yandexDiskPhotoPreviewProxyUrl($preview) : yandexDiskPreviewProxyUrl($ruta, 'M'))
+		: '';
+	$ubicacion = $esPhotos ? $rutaVisible : dirname($ruta);
+	$miniatura = $previewSrc !== ''
+		? '<img src="' . escaparHtml($previewSrc) . '" alt="' . escaparHtml($nombre) . '" loading="lazy">'
+		: '<span class="yandex-remoto-placeholder">' . escaparHtml($tipoTexto) . '</span>';
+	$badgeOrigen = $desdeUnlimited
+		? '<span class="yandex-remoto-origen" title="' . escaparHtml($esPhotos ? 'Yandex Photos: From unlimited storage' : 'Path inicia con /photounlim/') . '">' . ($esPhotos ? 'Photos' : 'Photounlim') . '</span>'
+		: '';
+	$claseOrigen = $desdeUnlimited ? ' yandex-remoto-unlimited' : '';
+	$atributoOrigen = $esPhotos
+		? ' data-yandex-photo-id="' . escaparHtml($photoId) . '"'
+		: ' data-yandex-path="' . escaparHtml($ruta) . '"';
+	$atributosMovimiento = (!$esPhotos && !$desdeUnlimited && $ruta !== '')
+		? ' data-yandex-movable="1" data-yandex-name="' . escaparHtml($nombre) . '"'
+		: '';
+	$rutaDetalle = $esPhotos ? $photoId : $ruta;
+	$tipoDetalle = $tipo === 'video' ? 'vid' : 'img';
+	$lightboxIcono = $tipo === 'video' ? '▶️' : '👁️';
+	$lightboxEtiqueta = $tipo === 'video' ? 'Abrir video en lightbox' : 'Abrir imagen en lightbox';
+
+	return
+		'<article id="art_' . escaparHtml($id) . '" data-panel-id="' . escaparHtml($panelId) . '"' . $atributoOrigen . $atributosMovimiento . ' data-detalle-ruta="' . escaparHtml($rutaDetalle) . '" data-detalle-media="' . escaparHtml($tipoDetalle) . '" class="yandex-remoto-articulo yandex-remoto-' . escaparHtml($tipo) . $claseOrigen . '" tabindex="0">' .
+		'<figure>' .
+		'<button type="button" class="yandex-remoto-preview" title="' . escaparHtml($rutaVisible) . '" aria-label="Mostrar detalles de ' . escaparHtml($nombre) . '">' .
+		$miniatura .
+		$badgeOrigen .
+		($tipo === 'video' ? '<span class="yandex-remoto-video-indicador">Video</span>' : '') .
+		'</button>' .
+		'<button type="button" class="abrir-lightbox yandex-lightbox-boton" data-lightbox-href="' . escaparHtml($lightboxHref) . '" data-lightbox-tipo="' . escaparHtml($tipo) . '" aria-label="' . escaparHtml($lightboxEtiqueta) . '" title="' . escaparHtml($lightboxEtiqueta) . '">' . $lightboxIcono . '</button>' .
+		'<figcaption>' .
+		'<div><small>' . escaparHtml($ubicacion) . '</small><br>' . escaparHtml($nombre) . '</div>' .
+		($meta !== '' ? '<small>' . escaparHtml($meta) . '</small>' : '') .
+		'</figcaption>' .
+		'</figure>' .
+		'</article>' .
+		renderizarDetalleYandexDisk($item, $id);
 }
 
 function paginacionYandexDisk(int $paginaActual, int $totalPaginas, int $ver, string $ruta, string $estilo = 'completo', string $vista = 'disk', string $orden = 'name'): string

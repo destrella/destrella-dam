@@ -4312,15 +4312,20 @@ document.addEventListener('DOMContentLoaded', function () {
 		panel.innerHTML = '<p class="panel-cargando">Cargando metadatos...</p>';
 
 		try {
+			const esYandex = articulo.classList.contains('yandex-remoto-articulo');
+			const payload = {
+				estado_metadatos: true,
+				id,
+				ruta,
+				media
+			};
+			if (esYandex) {
+				payload.yandex = true;
+			}
 			const respuesta = await fetch('index.php', {
 				method: 'POST',
 				headers: {'Content-Type': 'application/json;charset=UTF-8'},
-				body: JSON.stringify({
-					estado_metadatos: true,
-					id,
-					ruta,
-					media
-				})
+				body: JSON.stringify(payload)
 			});
 			if (!respuesta.ok) {
 				throw new Error('No se pudo cargar el detalle.');
@@ -4350,8 +4355,10 @@ document.addEventListener('DOMContentLoaded', function () {
 			panelNuevo.hidden = !visible;
 			panelNuevo.removeAttribute('aria-busy');
 
-			actualizarArticuloDesdeDetalle(articulo, articuloNuevo);
-			sincronizarIndicadoresArticulo(articulo);
+			if (!esYandex) {
+				actualizarArticuloDesdeDetalle(articulo, articuloNuevo);
+				sincronizarIndicadoresArticulo(articulo);
+			}
 		} catch (err) {
 			panel.innerHTML =
 				'<p class="respuesta_error">' + escaparHtmlCliente(err.message || 'No se pudieron cargar los metadatos.') + '</p>' +
@@ -4696,9 +4703,6 @@ document.addEventListener('DOMContentLoaded', function () {
 		document.querySelectorAll('.panel-articulo[id^="pie_"]').forEach(panel => {
 			panel.hidden = true;
 		});
-		if (panelDestino) {
-			panelDestino.replaceChildren();
-		}
 		document.querySelectorAll('main article[data-panel-id]').forEach(articulo => {
 			articulo.classList.remove('activo');
 		});

@@ -356,6 +356,35 @@ function catalogoGuardarYandex(PDO $pdo, array $entrada, int $verificado = 0): b
 	return catalogoGuardarMedio($pdo, $datos);
 }
 
+function catalogoObtenerYandexPorRuta(string $rutaRemota): ?array
+{
+	$pdo = conectarCatalogoMultimedia();
+	if (!$pdo):
+		return null;
+	endif;
+
+	$rutaRemota = function_exists('normalizarRutaYandexDisk') ? normalizarRutaYandexDisk($rutaRemota) : '/' . ltrim($rutaRemota, '/');
+	if ($rutaRemota === '/'):
+		return null;
+	endif;
+
+	$stmt = $pdo->prepare("
+		SELECT ruta, ruta_relativa, ruta_remota, resource_id, mime, preview, url,
+			creado, nombre, tipo, mtime, tamano, ancho, alto, duracion,
+			md5, sha256, existente
+		FROM medios
+		WHERE origen = 'yandex' AND ruta_remota = :ruta_remota AND existente = 1
+		LIMIT 1
+	");
+	$stmt->execute([':ruta_remota' => $rutaRemota]);
+	$fila = $stmt->fetch(PDO::FETCH_ASSOC);
+	if (!is_array($fila)):
+		return null;
+	endif;
+
+	return $fila;
+}
+
 function catalogoStatementGuardar(PDO $pdo): PDOStatement
 {
 	static $statements = [];

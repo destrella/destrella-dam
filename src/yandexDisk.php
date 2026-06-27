@@ -1170,6 +1170,17 @@ function obtenerRecursoYandexDisk(array $configuracion, string $ruta): array
 		return ['ok' => false, 'status' => 400, 'error' => 'Ruta de recurso inválida.', 'recurso' => null];
 	endif;
 
+	// Intentar obtener del catálogo local primero
+	if (function_exists('catalogoObtenerYandexPorRuta')):
+		$catalogado = catalogoObtenerYandexPorRuta($ruta);
+		if ($catalogado !== null):
+			$recurso = yandexDiskRecursoDesdeCatalogo($catalogado);
+			if ($recurso !== null):
+				return ['ok' => true, 'status' => 200, 'error' => '', 'recurso' => $recurso, 'desde_catalogo' => true];
+			endif;
+		endif;
+	endif;
+
 	$respuesta = yandexDiskPeticion('resources', [
 		'path' => rutaApiYandexDisk($ruta),
 		'fields' => 'name,path,type,mime_type,media_type,md5,sha256,size,modified,created,preview,public_url,resource_id,exif',
@@ -1190,6 +1201,56 @@ function obtenerRecursoYandexDisk(array $configuracion, string $ruta): array
 	endif;
 
 	return ['ok' => true, 'status' => 200, 'error' => '', 'recurso' => $recurso];
+}
+
+function yandexDiskRecursoDesdeCatalogo(array $catalogado): ?array
+{
+	$rutaRemota = (string) ($catalogado['ruta_remota'] ?? '');
+	if ($rutaRemota === ''):
+		return null;
+	endif;
+
+	$mime = (string) ($catalogado['mime'] ?? '');
+	$tipo = (string) ($catalogado['tipo'] ?? '');
+	$esImagen = str_starts_with($mime, 'image/') || $tipo === 'img';
+	$esVideo = str_starts_with($mime, 'video/') || $tipo === 'vid';
+	if (!$esImagen && !$esVideo):
+		return null;
+	endif;
+
+	$tamano = max(0, (int) ($catalogado['tamano'] ?? 0));
+	$creado = max(0, (int) ($catalogado['creado'] ?? 0));
+	$modificado = max(0, (int) ($catalogado['mtime'] ?? 0));
+
+	return [
+		'ruta' => $rutaRemota,
+		'nombre' => (string) ($catalogado['nombre'] ?? basename($rutaRemota)),
+		'tipo' => $esImagen ? 'image' : 'video',
+		'mime' => $mime,
+		'media_type' => $esImagen ? 'image' : 'video',
+		'es_multimedia' => true,
+		'es_directorio' => false,
+		'md5' => (string) ($catalogado['md5'] ?? ''),
+		'sha256' => (string) ($catalogado['sha256'] ?? ''),
+		'resource_id' => (string) ($catalogado['resource_id'] ?? ''),
+		'tamano' => $tamano,
+		'tamano_legible' => $tamano > 0 ? yandexDiskFormatoTamano($tamano) : '',
+		'ancho' => max(0, (int) ($catalogado['ancho'] ?? 0)),
+		'alto' => max(0, (int) ($catalogado['alto'] ?? 0)),
+		'duracion' => max(0, (int) ($catalogado['duracion'] ?? 0)),
+		'exif' => [],
+		'creado' => $creado > 0 ? gmdate('c', $creado) : '',
+		'modificado' => $modificado > 0 ? gmdate('c', $modificado) : '',
+		'preview' => (string) ($catalogado['preview'] ?? ''),
+		'preview_lightbox' => '',
+		'public_url' => '',
+		'url' => (string) ($catalogado['url'] ?? ''),
+		'namespace' => 'disk',
+		'desde_unlimited' => false,
+		'origen' => 'Yandex Disk',
+		'photo_id' => '',
+		'ruta_visible' => $rutaRemota,
+	];
 }
 
 function enviarPapeleraYandexDisk(array $configuracion, string $ruta): array
