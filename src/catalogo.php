@@ -507,6 +507,88 @@ function catalogoRegistrarArchivo(string $ruta, ?string $tipo = null, array $ext
 	return catalogoGuardarMedio($pdo, $datos);
 }
 
+function catalogoArchivoRequiereRegistro(PDO $pdo, string $ruta): bool
+{
+	$ruta = catalogoNormalizarRuta($ruta);
+	if ($ruta === '' || !is_file($ruta)):
+		return false;
+	endif;
+
+	clearstatcache(true, $ruta);
+	$mtime = filemtime($ruta) ?: 0;
+	$tamano = filesize($ruta) ?: 0;
+
+	try {
+		$stmt = $pdo->prepare("
+			SELECT mtime, tamano, existente
+			FROM medios
+			WHERE origen = 'local' AND ruta = :ruta
+			LIMIT 1
+		");
+		$stmt->execute([':ruta' => $ruta]);
+		$fila = $stmt->fetch(PDO::FETCH_ASSOC);
+	} catch (PDOException $e) {
+		return true;
+	}
+
+	return !$fila
+		|| (int) ($fila['existente'] ?? 0) !== 1
+		|| (int) ($fila['mtime'] ?? -1) !== (int) $mtime
+		|| (int) ($fila['tamano'] ?? -1) !== (int) $tamano;
+}
+
+function catalogoRegistrarArchivoSiCambio(PDO $pdo, string $ruta, ?string $tipo = null): bool
+{
+	$ruta = catalogoNormalizarRuta($ruta);
+	if ($ruta === '' || !is_file($ruta)):
+		return false;
+	endif;
+
+	$tipo = in_array($tipo, ['img', 'vid'], true) ? $tipo : (tipoMultimediaDesdeRuta($ruta) ?? '');
+	if ($tipo === ''):
+		return false;
+	endif;
+
+	if (!catalogoArchivoRequiereRegistro($pdo, $ruta)):
+		return false;
+	endif;
+
+	$datos = catalogoDatosArchivo($ruta, $tipo, ['verificado' => time()]);
+	return $datos !== null && catalogoGuardarMedio($pdo, $datos);
+}
+
+function catalogoSincronizarDirectorioVista(PDO $pdo, string $rutaBase): int
+{
+	$rutaBase = catalogoNormalizarRuta($rutaBase);
+	if ($rutaBase === '' || !is_dir($rutaBase)):
+		return 0;
+	endif;
+
+	$total = 0;
+	try {
+		$directorio = new DirectoryIterator($rutaBase);
+	} catch (UnexpectedValueException $e) {
+		return 0;
+	}
+
+	foreach ($directorio as $archivo):
+		if (!$archivo->isFile()):
+			continue;
+		endif;
+
+		$ruta = $archivo->getPathname();
+		$tipo = tipoMultimediaDesdeRuta($ruta);
+		if ($tipo === null):
+			continue;
+		endif;
+		if (catalogoRegistrarArchivoSiCambio($pdo, $ruta, $tipo)):
+			$total++;
+		endif;
+	endforeach;
+
+	return $total;
+}
+
 function catalogoEliminarMedio(string $ruta): void
 {
 	$pdo = conectarCatalogoMultimedia();
@@ -711,6 +793,12 @@ function catalogoResultadosMultimedia(
 	endif;
 	if (empty($tipos)):
 		return [];
+	endif;
+
+	if ($unarchivo !== null):
+		catalogoRegistrarArchivoSiCambio($pdo, $unarchivo);
+	else:
+		catalogoSincronizarDirectorioVista($pdo, $rutaBase);
 	endif;
 
 	$params = [':existente' => 1, ':origen' => 'local'];
