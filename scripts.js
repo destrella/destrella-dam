@@ -362,6 +362,14 @@ function urlRaizCarpetas(){
 	return url.toString();
 }
 
+function urlPanelYandexDisk(ruta){
+	const url = new URL(window.location.href);
+	url.searchParams.set('panel', 'yandex');
+	url.searchParams.set('yandex_path', normalizarRutaVista(ruta) || '/');
+	url.searchParams.delete('pagina');
+	return url.toString();
+}
+
 function redirigirARaizCarpetas(){
 	mostrarCargaNavegacion('Volviendo a la raíz');
 	window.location.href = urlRaizCarpetas();
@@ -4399,6 +4407,43 @@ document.addEventListener('DOMContentLoaded', function () {
 		ev.stopPropagation();
 		enviarYandexPapelera(boton);
 	});
+
+		document.addEventListener('click', function (ev) {
+			const boton = ev.target.closest?.('.yandex-borrar-carpeta-boton');
+			if (!boton) return;
+			ev.preventDefault();
+			ev.stopPropagation();
+			borrarCarpetaYandex(boton);
+		});
+
+		async function borrarCarpetaYandex(boton) {
+			const ruta = boton?.dataset.yandexTrashPath || '';
+			const padre = boton?.dataset.yandexParentPath || '/';
+			if (!ruta) return;
+			if (!confirm(`¿Enviar a la papelera de Yandex Disk la carpeta?\n${ruta}`)) return;
+
+			boton.disabled = true;
+			boton.setAttribute('aria-busy', 'true');
+			mostrarCargaNavegacion('Enviando a papelera');
+
+			try {
+				const respuesta = await fetch('yandex_trash.php', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+					body: JSON.stringify({ path: ruta })
+				});
+				const datos = await respuesta.json().catch(() => null);
+				if (!respuesta.ok || !datos?.ok) {
+					throw new Error(datos?.error || `HTTP ${respuesta.status}`);
+				}
+				window.location.href = urlPanelYandexDisk(padre);
+			} catch (err) {
+				alert(err.message || 'No se pudo enviar la carpeta a la papelera.');
+				boton.disabled = false;
+				boton.removeAttribute('aria-busy');
+				ocultarCargaNavegacion();
+			}
+		}
 
 	function agregarIndicadorArticulo(contenedor, clase, icono, etiqueta) {
 		const indicador = document.createElement('span');

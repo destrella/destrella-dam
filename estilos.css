@@ -1318,6 +1318,42 @@ input[type="search"] {
 	font-size: 0.78rem;
 }
 
+.yandex-carpeta-vacia {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding: 0.5rem 0;
+}
+
+.yandex-carpeta-vacia .yandex-disk-estado {
+	color: var(--text-body);
+	font-size: 0.85rem;
+	font-weight: 700;
+}
+
+.yandex-enlace-servidor {
+	font-size: 0.78rem;
+}
+
+.yandex-borrar-carpeta-boton {
+	align-self: flex-start;
+}
+
+.yandex-sin-multimedia {
+	text-align: center;
+	padding: 2rem 1rem;
+	color: var(--grey-text);
+}
+
+.yandex-sin-multimedia p {
+	margin: 0 0 0.5rem 0;
+	font-size: 1rem;
+}
+
+.yandex-sin-multimedia a {
+	font-size: 0.85rem;
+}
+
 .yandex-disk-resumen {
 	display: grid;
 	gap: 0.15rem;

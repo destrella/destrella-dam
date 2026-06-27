@@ -245,7 +245,23 @@ if ($panelYandexActivo):
 	if (!($estadoYandexDisk['ok'] ?? false)):
 		$html = '<div class="error-directorio yandex-remoto-error" role="alert"><p>⚠️ ' . escaparHtml((string) ($estadoYandexDisk['error'] ?? 'No se pudo leer Yandex Disk.')) . '</p></div>';
 	else:
-		$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, 'No hay multimedia remota en esta página.');
+		$mensajeVacio = 'No hay multimedia remota en esta página.';
+		if (empty($resultados_paginados) && ($estadoYandexDiskNavegacion['ok'] ?? false)):
+			$totalItems = (int) ($estadoYandexDiskNavegacion['total'] ?? 0);
+			$totalMultimedia = (int) ($estadoYandexDiskNavegacion['total_multimedia'] ?? 0);
+			if ($totalItems > 0 && $totalMultimedia === 0):
+				$urlYandex = yandexDiskUrlCliente($rutaYandexDisk);
+				$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, $mensajeVacio);
+				$html .= '<div class="yandex-sin-multimedia">' .
+					'<p>Carpeta sin archivos multimedia</p>' .
+					'<a href="' . escaparHtml($urlYandex) . '" target="_blank" rel="noopener noreferrer">Ver carpeta en el servidor.</a>' .
+					'</div>';
+			else:
+				$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, $mensajeVacio);
+			endif;
+		else:
+			$html = renderizarMultimediaYandexDisk($resultados_paginados, $indice_inicial + 1, $mensajeVacio);
+		endif;
 	endif;
 endif;
 $rutaDuplicados = $panelDuplicadosActivo ? (string) ($_GET['ruta'] ?? '') : '';

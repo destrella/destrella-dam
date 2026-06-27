@@ -276,7 +276,19 @@ function renderizarPanelYandexDisk(array $estado, string $vistaActiva = 'disk', 
 	endif;
 
 	if (empty($directorios)):
-		$html .= '<p class="yandex-disk-estado">Sin carpetas en esta ruta.</p></div>';
+		if ($totalElementos === 0 && $rutaActual !== '/'):
+			$urlYandex = yandexDiskUrlCliente($rutaActual);
+			$urlPadre = urlPanelYandexDisk($padre ?? '/', $ordenNavegacion);
+			$html .=
+				'<div class="yandex-carpeta-vacia">' .
+				'<p class="yandex-disk-estado">Carpeta vacía, ¿eliminarla del servidor?</p>' .
+				'<a class="yandex-enlace-servidor" href="' . escaparHtml($urlYandex) . '" target="_blank" rel="noopener noreferrer">Ver carpeta en el servidor.</a>' .
+				'<button type="button" class="yandex-borrar-carpeta-boton" data-yandex-trash-path="' . escaparHtml($rutaActual) . '" data-yandex-parent-path="' . escaparHtml($padre ?? '/') . '">Borrar del servidor</button>' .
+				'</div>';
+		else:
+			$html .= '<p class="yandex-disk-estado">Sin carpetas en esta ruta.</p>';
+		endif;
+		$html .= '</div>';
 		return $html;
 	endif;
 
