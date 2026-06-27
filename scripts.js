@@ -851,15 +851,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
 	document.addEventListener('click', function (ev) {
 		if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
-		const enlace = ev.target.closest?.('.paginación a, .palabra-clave-link');
+		const enlace = ev.target.closest?.('.paginación a, .palabra-clave-link, .yandex-disk-panel a');
 		if (!enlace || !enlace.href) return;
+		if (enlace.target === '_blank') return;
 		if (enlace.classList.contains('palabra-clave-link')) {
 			escribirStorageSesion(
 				claveFocoPalabraClave,
 				enlace.dataset.palabraBusqueda || enlace.dataset.palabra || ''
 			);
 		}
-		mostrarCargaNavegacion('Cargando página');
+		mostrarCargaNavegacion('Cargando');
 	});
 
 	/* ─────────── Resolver dirección desde GEO ─────────── */
