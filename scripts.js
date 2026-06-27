@@ -503,15 +503,26 @@ function actualizarVistaTrasExtraccion(id, respuestaHtml){
 }
 
 function actualizarVistaTrasMovimiento(id, mensajeHtml){
+	const hacerRelleno = async () => {
+		await rellenarVistaHastaCompleta();
+		if (cantidadArticulosVista() === 0) {
+			const parametros = obtenerParametrosVistaActual();
+			if (parametros.total_paginas > 1) {
+				const paginaDestino = Math.max(1, parametros.pagina - 1);
+				redirigirAPaginaVista(paginaDestino, 'Cargando página anterior');
+			}
+		}
+	};
+
 	if (window.DAM && window.DAM.removerBloqueArticulo) {
 		window.DAM.removerBloqueArticulo(id, mensajeHtml);
-		rellenarVistaHastaCompleta();
+		hacerRelleno();
 		return;
 	}
 
 	document.getElementById('art_'+id)?.remove();
 	document.getElementById('pie_'+id)?.remove();
-	rellenarVistaHastaCompleta();
+	hacerRelleno();
 }
 
 function abrirArchivo(id){
