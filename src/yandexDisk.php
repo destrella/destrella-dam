@@ -1078,6 +1078,21 @@ function obtenerPreviewYandexDisk(array $configuracion, string $ruta, string $ta
 		'preview_crop' => 'false',
 	], $token, 10);
 
+	// Reintentar con la otra normalización Unicode si falla con 404
+	if (!$respuesta['ok'] && (int) ($respuesta['status'] ?? 0) === 404 && class_exists('Normalizer')):
+		$rutaAlterna = Normalizer::isNormalized($ruta, Normalizer::FORM_C)
+			? Normalizer::normalize($ruta, Normalizer::FORM_D)
+			: Normalizer::normalize($ruta, Normalizer::FORM_C);
+		if ($rutaAlterna !== $ruta):
+			$respuesta = yandexDiskPeticion('resources', [
+				'path' => rutaApiYandexDisk($rutaAlterna),
+				'fields' => 'name,path,type,preview,mime_type',
+				'preview_size' => normalizarTamanoPreviewYandexDisk($tamano),
+				'preview_crop' => 'false',
+			], $token, 10);
+		endif;
+	endif;
+
 	if (!$respuesta['ok']):
 		$status = (int) ($respuesta['status'] ?? 502);
 		$limpieza = $status === 404 ? yandexDiskMarcarRecursoAusente($ruta, 'preview_404') : null;
@@ -1187,6 +1202,21 @@ function obtenerRecursoYandexDisk(array $configuracion, string $ruta): array
 		'preview_size' => 'M',
 		'preview_crop' => 'false',
 	], $token, 10);
+
+	// Reintentar con la otra normalización Unicode si falla con 404
+	if (!$respuesta['ok'] && (int) ($respuesta['status'] ?? 0) === 404 && class_exists('Normalizer')):
+		$rutaAlterna = Normalizer::isNormalized($ruta, Normalizer::FORM_C)
+			? Normalizer::normalize($ruta, Normalizer::FORM_D)
+			: Normalizer::normalize($ruta, Normalizer::FORM_C);
+		if ($rutaAlterna !== $ruta):
+			$respuesta = yandexDiskPeticion('resources', [
+				'path' => rutaApiYandexDisk($rutaAlterna),
+				'fields' => 'name,path,type,mime_type,media_type,md5,sha256,size,modified,created,preview,public_url,resource_id,exif',
+				'preview_size' => 'M',
+				'preview_crop' => 'false',
+			], $token, 10);
+		endif;
+	endif;
 
 	if (!$respuesta['ok']):
 		$status = (int) ($respuesta['status'] ?? 502);
@@ -1322,6 +1352,28 @@ function moverRecursoYandexDisk(array $configuracion, string $origen, string $di
 		'overwrite' => 'false',
 		'fields' => 'href,method,templated',
 	], $token, 30, 'POST');
+
+	// Reintentar con la otra normalización Unicode del directorio destino si falla
+	if (!$respuesta['ok'] && (int) ($respuesta['status'] ?? 0) === 404 && class_exists('Normalizer')):
+		$directorioAlterno = Normalizer::isNormalized($directorioDestino, Normalizer::FORM_C)
+			? Normalizer::normalize($directorioDestino, Normalizer::FORM_D)
+			: Normalizer::normalize($directorioDestino, Normalizer::FORM_C);
+		if ($directorioAlterno !== $directorioDestino):
+			$destinoAlterno = rutaHijaYandexDisk($directorioAlterno, basename($origen));
+			if ($destinoAlterno !== $destino):
+				$respuesta = yandexDiskPeticion('resources/move', [
+					'from' => rutaApiYandexDisk($origen),
+					'path' => rutaApiYandexDisk($destinoAlterno),
+					'overwrite' => 'false',
+					'fields' => 'href,method,templated',
+				], $token, 30, 'POST');
+				if ($respuesta['ok']):
+					$destino = $destinoAlterno;
+					$directorioDestino = $directorioAlterno;
+				endif;
+			endif;
+		endif;
+	endif;
 
 	if (!$respuesta['ok']):
 		if ((int) ($respuesta['status'] ?? 0) === 404):
