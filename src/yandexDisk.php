@@ -660,7 +660,6 @@ function yandexDiskPhotoMediaProxyUrl(string $id, string $tipo = 'image', string
 function normalizarRutaYandexDisk(mixed $valor): string
 {
 	$ruta = yandexDiskRutaVisible((string) $valor);
-	$ruta = class_exists('Normalizer') ? Normalizer::normalize($ruta, Normalizer::FORM_D) : $ruta;
 	$partes = [];
 	foreach (explode('/', trim($ruta, '/')) as $parte):
 		$parte = trim($parte);
