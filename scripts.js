@@ -3796,7 +3796,16 @@ document.addEventListener('DOMContentLoaded', function () {
 			opciones.set('/', 'Raíz de Yandex.Disk');
 
 			const actual = rutaActualYandexCliente();
-			opciones.set(actual, actual === '/' ? 'Raíz de Yandex.Disk' : `Ruta actual: ${actual}`);
+			if (actual !== '/') {
+				opciones.set(actual, `Ruta actual: ${actual}`);
+				let padre = rutaPadreYandexCliente(actual);
+				while (padre !== '/') {
+					if (!opciones.has(padre)) {
+						opciones.set(padre, padre);
+					}
+					padre = rutaPadreYandexCliente(padre);
+				}
+			}
 
 			obtenerSeleccionYandex().forEach(item => {
 				const padre = rutaPadreYandexCliente(item.ruta);
@@ -3812,7 +3821,7 @@ document.addEventListener('DOMContentLoaded', function () {
 					|| ''
 				);
 				if (ruta !== '/' && !opciones.has(ruta)) {
-					opciones.set(ruta, etiquetaDestinoYandex(ruta));
+					opciones.set(ruta, ruta);
 				}
 			});
 
@@ -3860,6 +3869,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			const select = modal.querySelector('[name="destino"]');
 			const input = modal.querySelector('[name="destino_manual"]');
 			const estado = modal.querySelector('[data-yandex-move-status]');
+			const datalist = modal.querySelector('#yandex-destinos-datalist');
 			if (contexto) {
 				contexto.textContent = seleccion.length === 1
 					? seleccion[0].ruta
@@ -3870,6 +3880,21 @@ document.addEventListener('DOMContentLoaded', function () {
 				estado.className = 'modal-lote-estado';
 			}
 			poblarSelectorDestinosYandexRemotos(select, input);
+			if (datalist) {
+				datalist.textContent = '';
+				fetch('carpetas_locales.php?yandex=1')
+					.then(respuesta => respuesta.json().catch(() => null))
+					.then(datos => {
+						if (!datos?.ok || !Array.isArray(datos.carpetas)) return;
+						datalist.textContent = '';
+						datos.carpetas.forEach(({ valor }) => {
+							const op = document.createElement('option');
+							op.value = valor;
+							datalist.appendChild(op);
+						});
+					})
+					.catch(() => {});
+			}
 			modal.hidden = false;
 			requestAnimationFrame(() => input?.focus());
 		}
@@ -3893,8 +3918,9 @@ document.addEventListener('DOMContentLoaded', function () {
 							'<select name="destino"></select>' +
 						'</label>' +
 						'<label>Ruta destino' +
-							'<input type="text" name="destino_manual" autocomplete="off" placeholder="/media">' +
+							'<input type="text" name="destino_manual" list="yandex-destinos-datalist" autocomplete="off" placeholder="/media">' +
 						'</label>' +
+						'<datalist id="yandex-destinos-datalist"></datalist>' +
 						'<output class="modal-lote-estado" data-yandex-move-status aria-live="polite"></output>' +
 						'<div class="modal-lote-acciones">' +
 							'<button type="button" data-modal-cancelar>Cancelar</button>' +
