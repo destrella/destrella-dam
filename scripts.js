@@ -3379,6 +3379,47 @@ document.addEventListener('DOMContentLoaded', function () {
 			.filter(item => item.articulo && item.ruta !== '/' && item.id);
 	}
 
+	function enviarPapeleraSeleccionYandex() {
+		const seleccion = obtenerSeleccionYandex();
+		if (!seleccion.length) return;
+		if (!confirm(`¿Enviar a la papelera de Yandex Disk ${seleccion.length} archivo${seleccion.length === 1 ? '' : 's'}?`)) return;
+
+		operacionYandexEnCurso = true;
+		alternarAccionesYandexOcupadas(true);
+		mostrarCargaNavegacion('Enviando a papelera');
+		let procesados = 0;
+		let errores = [];
+
+		Promise.all(seleccion.map(item =>
+			fetch('yandex_trash.php', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+				body: JSON.stringify({ path: item.ruta })
+			})
+			.then(respuesta => respuesta.json().catch(() => null))
+			.then(datos => {
+				if (datos?.ok) {
+					procesados++;
+					window.DAM?.removerBloqueArticulo?.(item.id, '');
+				} else {
+					errores.push(item.ruta);
+				}
+			})
+			.catch(() => { errores.push(item.ruta); })
+		)).then(() => {
+			redirigirSiPaginaVacia();
+			let mensaje = `${procesados} archivo${procesados === 1 ? '' : 's'} enviado${procesados === 1 ? '' : 's'} a la papelera.`;
+			if (errores.length) {
+				mensaje += ` ${errores.length} error${errores.length === 1 ? '' : 'es'}.`;
+			}
+			mostrarMensajeDetalle(`<p>${escaparHtmlCliente(mensaje)}</p>`);
+			limpiarSeleccionYandex();
+			operacionYandexEnCurso = false;
+			alternarAccionesYandexOcupadas(false);
+			ocultarCargaNavegacion();
+		});
+	}
+
 	function crearBarraSeleccionYandex() {
 		if (barraSeleccionYandex) return barraSeleccionYandex;
 
@@ -3392,6 +3433,7 @@ document.addEventListener('DOMContentLoaded', function () {
 			'<div class="acciones-lote-botones">' +
 				'<button type="button" data-yandex-lote="seleccionar-todos">Seleccionar todos</button>' +
 				'<button type="button" data-yandex-lote="mover">Mover</button>' +
+				'<button type="button" data-yandex-lote="papelera">Mover a la papelera</button>' +
 				'<button type="button" data-yandex-lote="limpiar">Limpiar</button>' +
 			'</div>';
 
@@ -3403,6 +3445,8 @@ document.addEventListener('DOMContentLoaded', function () {
 				seleccionarTodosYandexMostrados();
 			} else if (accion === 'mover') {
 				abrirModalMoverYandex();
+			} else if (accion === 'papelera') {
+				enviarPapeleraSeleccionYandex();
 			} else if (accion === 'limpiar') {
 				limpiarSeleccionYandex();
 			}
@@ -3438,7 +3482,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		if (!operacionYandexEnCurso) {
 			barra.querySelectorAll('button').forEach(boton => {
 				const accion = boton.dataset.yandexLote;
-				boton.disabled = accion === 'mover' || accion === 'limpiar' ? seleccion.length === 0 : false;
+				boton.disabled = accion === 'mover' || accion === 'papelera' || accion === 'limpiar' ? seleccion.length === 0 : false;
 			});
 		}
 	}
