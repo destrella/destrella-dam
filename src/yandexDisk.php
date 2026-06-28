@@ -1763,6 +1763,7 @@ function obtenerDirectorioYandexDisk(array $configuracion, string $ruta = '/', i
 		];
 	else:
 		$respuesta = yandexDiskPeticion('resources', $parametros, $token);
+		$codigoApi = (int) ($respuesta['status'] ?? 0);
 		if ($respuesta['ok'] && is_array($respuesta['data'] ?? null)):
 			guardarCacheYandexDisk($claveCache, $respuesta['data']);
 			$estado['cache'] = [
@@ -1772,7 +1773,10 @@ function obtenerDirectorioYandexDisk(array $configuracion, string $ruta = '/', i
 				'created_at' => time(),
 			];
 		else:
-			$cacheVencido = leerCacheVencidoYandexDisk($claveCache);
+			if ($codigoApi === 404):
+				depurarCacheRecursoYandexDisk($ruta);
+			endif;
+			$cacheVencido = $codigoApi !== 404 ? leerCacheVencidoYandexDisk($claveCache) : null;
 			if ($cacheVencido !== null):
 				$respuesta = [
 					'ok' => true,
